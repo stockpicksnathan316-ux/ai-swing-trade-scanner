@@ -122,6 +122,54 @@ col4, col5 = st.columns(2)
 col4.metric("🔮 Today's 5-Day UP Probability", f"{live_prob:.1%}")
 col5.metric("📅 Latest Data", str(df.index[-1].date()))
 
+# --- Backtest on test set (out-of-sample) ---
+if len(X_test) > 0:
+    y_test_pred_proba = best_model.predict_proba(X_test)[:, 1]
+    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+    acc_test = accuracy_score(y_test, y_test_pred_class)
+    prec_test = precision_score(y_test, y_test_pred_class, zero_division=0)
+    rec_test = recall_score(y_test, y_test_pred_class, zero_division=0)
+    f1_test = f1_score(y_test, y_test_pred_class, zero_division=0)
+
+    # Store test predictions for plotting
+    df_test['pred_prob'] = y_test_pred_proba
+    df_test['pred_class'] = y_test_pred_class
+    df_test['actual'] = y_test.values
+
+    # --- Backtest expander ---
+    with st.expander("📈 Backtest Performance (out‑of‑sample)"):
+        st.metric("Test Accuracy", f"{acc_test:.1%}")
+        st.metric("Test Precision", f"{prec_test:.1%}")
+        st.metric("Test Recall", f"{rec_test:.1%}")
+        st.metric("Test F1 Score", f"{f1_test:.1%}")
+
+        # Simple equity curve: simulate trades based on predictions
+        df_test['return'] = df_test['Close'].pct_change().shift(-1)  # next day return
+        df_test['strategy_return'] = df_test['pred_class'] * df_test['return']
+        df_test['cumulative_market'] = (1 + df_test['return']).cumprod()
+        df_test['cumulative_strategy'] = (1 + df_test['strategy_return']).cumprod()
+
+        # Plot equity curves
+        import plotly.graph_objects as go
+        fig_back = go.Figure()
+        fig_back.add_trace(go.Scatter(x=df_test.index, y=df_test['cumulative_market'],
+                                       mode='lines', name='Buy & Hold'))
+        fig_back.add_trace(go.Scatter(x=df_test.index, y=df_test['cumulative_strategy'],
+                                       mode='lines', name='AI Strategy'))
+        fig_back.update_layout(title="Equity Curve (Test Period)", xaxis_title="Date", yaxis_title="Cumulative Return")
+        st.plotly_chart(fig_back, use_container_width=True)
+
+        # Win rate on trades
+        trades = df_test[df_test['pred_class'] == 1]
+        if len(trades) > 0:
+            win_rate = (trades['strategy_return'] > 0).mean()
+            st.metric("Win Rate (on trades)", f"{win_rate:.1%}")
+else:
+    with st.expander("📈 Backtest Performance (out‑of‑sample)"):
+        st.info("Not enough test data to display backtest.")
+
 # --- Feature importance (optional) ---
 if st.checkbox("Show what the AI learned"):
     importance = pd.DataFrame({
