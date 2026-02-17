@@ -6,6 +6,9 @@ import xgboost as xgb
 from ta import add_all_ta_features
 from sklearn.metrics import accuracy_score, precision_score
 from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+import lightgbm as lgb
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
@@ -60,24 +63,45 @@ y_train = df_train['target']
 X_test = df_test[feature_columns]
 y_test = df_test['target']
 
-# --- Hyperparameter tuning with GridSearchCV ---
-param_grid = {
+# --- ENSEMBLE: XGBoost + Random Forest + LightGBM ---
+
+# 1. Tuned XGBoost
+xgb_param_grid = {
     'n_estimators': [50, 100, 200],
     'max_depth': [2, 3, 4],
     'learning_rate': [0.01, 0.05, 0.1]
 }
-
 xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
-grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grid, 
-                           cv=3, scoring='accuracy', verbose=0, n_jobs=-1)
-grid_search.fit(X_train, y_train)
+xgb_grid = GridSearchCV(estimator=xgb_model, param_grid=xgb_param_grid,
+                        cv=3, scoring='accuracy', verbose=0, n_jobs=-1)
+xgb_grid.fit(X_train, y_train)
+xgb_best = xgb_grid.best_estimator_
+st.write(f"✅ Best XGBoost params: {xgb_grid.best_params_}")
+st.write(f"✅ XGBoost CV accuracy: {xgb_grid.best_score_:.2%}")
 
-best_model = grid_search.best_estimator_
-st.write(f"✅ Best parameters: {grid_search.best_params_}")
-st.write(f"✅ Best CV accuracy: {grid_search.best_score_:.2%}")
+# 2. Random Forest
+rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
+rf_model.fit(X_train, y_train)
 
-# --- Predict on test set with best model ---
-y_pred_proba = best_model.predict_proba(X_test)[:, 1]
+# 3. LightGBM
+lgb_model = lgb.LGBMClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, random_state=42, verbose=-1)
+lgb_model.fit(X_train, y_train)
+
+# --- Voting Classifier (soft voting = average probabilities) ---
+ensemble_model = VotingClassifier(
+    estimators=[
+        ('xgb', xgb_best),
+        ('rf', rf_model),
+        ('lgb', lgb_model)
+    ],
+    voting='soft'
+)
+ensemble_model.fit(X_train, y_train)
+
+st.write("🎯 **Ensemble model trained with XGBoost, Random Forest, and LightGBM**")
+
+# --- Predict on test set with ensemble ---
+y_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
 y_pred_class = (y_pred_proba > 0.5).astype(int)
 
 # --- Compute accuracy / precision ---
@@ -86,7 +110,7 @@ prec = precision_score(y_test, y_pred_class, zero_division=0)
 
 # --- Live prediction (today) using the FULL data ---
 latest_row = df_full[feature_columns].fillna(0).iloc[[-1]]
-live_prob = best_model.predict_proba(latest_row)[0][1]
+live_prob = ensemble_model.predict_proba(latest_row)[0][1]
 
 # --- Plot candlestick with RSI buy signals (optional) ---
 fig = go.Figure()
@@ -124,7 +148,7 @@ col5.metric("📅 Latest Data", str(df.index[-1].date()))
 
 # --- Backtest on test set (out-of-sample) ---
 if len(X_test) > 0:
-    y_test_pred_proba = best_model.predict_proba(X_test)[:, 1]
+    y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
     y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
 
     from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
@@ -171,10 +195,10 @@ else:
         st.info("Not enough test data to display backtest.")
 
 # --- Feature importance (optional) ---
-if st.checkbox("Show what the AI learned"):
+if st.checkbox("Show what XGBoost learned"):
     importance = pd.DataFrame({
         'feature': feature_columns,
-        'importance': best_model.feature_importances_
+        'importance': xgb_best.feature_importances_
     }).sort_values('importance', ascending=False).head(10)
     st.bar_chart(importance.set_index('feature'))
 
