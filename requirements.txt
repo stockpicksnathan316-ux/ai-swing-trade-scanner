@@ -6,3 +6,4 @@ xgboost
 ta
 scikit-learn
 streamlit-autorefresh
+lightgbm
