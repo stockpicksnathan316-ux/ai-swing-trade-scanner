@@ -53,6 +53,25 @@ TICKERS = {
     'AMT': 'Real Estate',
     'EQIX': 'Real Estate',
 }
+# --- Macro data symbols ---
+MACRO_SYMBOLS = {
+    'VIX': '^VIX',
+    'TNX': '^TNX',
+    'CL': 'CL=F',
+}
+
+@st.cache_data(ttl=21600)
+def fetch_macro_data(period="1y"):
+    macro_df = pd.DataFrame()
+    for name, symbol in MACRO_SYMBOLS.items():
+        try:
+            data = yf.download(symbol, period=period, progress=False)
+            if not data.empty:
+                macro_df[name] = data['Close']
+        except:
+            macro_df[name] = pd.Series(dtype='float64')
+    macro_df = macro_df.ffill().bfill()
+    return macro_df
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
@@ -79,6 +98,10 @@ if isinstance(df.columns, pd.MultiIndex):
 df = add_all_ta_features(
     df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True
 )
+
+# --- Merge macro data ---
+macro_data = fetch_macro_data(period=period)
+df = df.join(macro_data, how='left').ffill().bfill()
 
 # --- Create target: price up in 5 days? ---
 df['future_close'] = df['Close'].shift(-5)
@@ -267,7 +290,7 @@ st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
 # --- Cached scanner function (refreshes every 6 hours) ---
 @st.cache_data(ttl=21600)  # 6 hours in seconds
-def scan_tickers(tickers):
+def scan_tickers(tickers, macro_df):
     results = []
     for ticker in tickers:
         try:
@@ -279,6 +302,9 @@ def scan_tickers(tickers):
                 df_t, open="Open", high="High", low="Low", close="Close",
                 volume="Volume", fillna=True
             )
+
+            # --- Merge macro data ---
+            df_t = df_t.join(macro_df, how='left').ffill().bfill()
 
             feature_cols = [c for c in df_t.columns if c not in 
                             ['Open','High','Low','Close','Volume']]
@@ -325,7 +351,8 @@ def scan_tickers(tickers):
 # --- When scan button is clicked ---
 if scan_button:
     with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
-        results = scan_tickers(ticker_list)
+        macro_data = fetch_macro_data(period="1y")
+        results = scan_tickers(ticker_list, macro_data)
 
     # Store in session state so it persists
     st.session_state.scanner_results = results
