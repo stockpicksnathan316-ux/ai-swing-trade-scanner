@@ -10,6 +10,50 @@ from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 import lightgbm as lgb
 
+# --- Master ticker list with sectors ---
+TICKERS = {
+    'AAPL': 'Technology',
+    'MSFT': 'Technology',
+    'GOOGL': 'Technology',
+    'META': 'Technology',
+    'NVDA': 'Technology',
+    'AMD': 'Technology',
+    'INTC': 'Technology',
+    'TSLA': 'Consumer Cyclical',
+    'AMZN': 'Consumer Cyclical',
+    'NFLX': 'Communication Services',
+    'DIS': 'Communication Services',
+    'JPM': 'Financial',
+    'BAC': 'Financial',
+    'WFC': 'Financial',
+    'GS': 'Financial',
+    'V': 'Financial',
+    'MA': 'Financial',
+    'JNJ': 'Healthcare',
+    'PFE': 'Healthcare',
+    'MRK': 'Healthcare',
+    'ABT': 'Healthcare',
+    'UNH': 'Healthcare',
+    'XOM': 'Energy',
+    'CVX': 'Energy',
+    'COP': 'Energy',
+    'SLB': 'Energy',
+    'BA': 'Industrials',
+    'CAT': 'Industrials',
+    'GE': 'Industrials',
+    'HON': 'Industrials',
+    'WMT': 'Consumer Defensive',
+    'PG': 'Consumer Defensive',
+    'KO': 'Consumer Defensive',
+    'PEP': 'Consumer Defensive',
+    'NEE': 'Utilities',
+    'DUK': 'Utilities',
+    'SO': 'Utilities',
+    'PLD': 'Real Estate',
+    'AMT': 'Real Estate',
+    'EQIX': 'Real Estate',
+}
+
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
 
@@ -202,63 +246,122 @@ if st.checkbox("Show what XGBoost learned"):
     }).sort_values('importance', ascending=False).head(10)
     st.bar_chart(importance.set_index('feature'))
 
-# ------------------- MULTI-TICKER SCREENER -------------------
-st.sidebar.header("🔍 Market Scanner")
-scan_tickers = st.sidebar.text_area("Tickers (comma separated)", "AAPL,MSFT,TSLA,NVDA,SPY")
-scan_button = st.sidebar.button("Scan")
+# ------------------- MULTI‑TICKER SCREENER (UPGRADED) -------------------
+st.sidebar.header("🔍 Market Scanner (50+ Tickers)")
 
-# Initialize session state for results if not present
-if 'scanner_results' not in st.session_state:
-    st.session_state.scanner_results = None
+# Sector filter
+sectors = ['All'] + sorted(set(TICKERS.values()))
+selected_sector = st.sidebar.selectbox("Filter by sector", sectors)
 
-if scan_button:
-    tickers = [t.strip() for t in scan_tickers.split(",") if t.strip()]
+# Button to start scan
+scan_button = st.sidebar.button("Scan Selected Tickers")
+
+# Create a list of tickers based on sector filter
+if selected_sector == 'All':
+    ticker_list = list(TICKERS.keys())
+else:
+    ticker_list = [t for t, s in TICKERS.items() if s == selected_sector]
+
+# Show count
+st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
+
+# --- Cached scanner function (refreshes every 6 hours) ---
+@st.cache_data(ttl=21600)  # 6 hours in seconds
+def scan_tickers(tickers):
     results = []
-
     for ticker in tickers:
-        with st.spinner(f"Analyzing {ticker}..."):
-            try:
-                # Download data
-                df_t = yf.download(ticker, period="1y", progress=False)
-                if isinstance(df_t.columns, pd.MultiIndex):
-                    df_t.columns = df_t.columns.droplevel(1)
+        try:
+            df_t = yf.download(ticker, period="1y", progress=False)
+            if isinstance(df_t.columns, pd.MultiIndex):
+                df_t.columns = df_t.columns.droplevel(1)
 
-                # Add technical indicators
-                df_t = add_all_ta_features(
-                    df_t, open="Open", high="High", low="Low", close="Close",
-                    volume="Volume", fillna=True
-                )
+            df_t = add_all_ta_features(
+                df_t, open="Open", high="High", low="Low", close="Close",
+                volume="Volume", fillna=True
+            )
 
-                # Feature columns (exclude price/volume)
-                feature_cols = [c for c in df_t.columns if c not in 
-                                ['Open', 'High', 'Low', 'Close', 'Volume']]
+            feature_cols = [c for c in df_t.columns if c not in 
+                            ['Open','High','Low','Close','Volume']]
 
-                # Train/validation split (80/20)
-                split = int(len(df_t) * 0.8)
-                train = df_t.iloc[:split]
+            split = int(len(df_t) * 0.8)
+            train = df_t.iloc[:split]
 
-                X_train = train[feature_cols].fillna(0)
-                y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
+            X_train = train[feature_cols].fillna(0)
+            y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
 
-                # Quick model
-                model_t = xgb.XGBClassifier(n_estimators=50, max_depth=2,
-                                            learning_rate=0.05, random_state=42)
-                model_t.fit(X_train, y_train)
+            # Quick ensemble for scanner (use same structure as main model)
+            xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+            rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
+            lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
 
-                # Predict on latest row
-                latest = df_t[feature_cols].fillna(0).iloc[[-1]]
-                prob = model_t.predict_proba(latest)[0][1]
+            xgb_t.fit(X_train, y_train)
+            rf_t.fit(X_train, y_train)
+            lgb_t.fit(X_train, y_train)
 
-                results.append({"Ticker": ticker, "Signal": f"{prob:.1%}"})
-            except Exception as e:
-                results.append({"Ticker": ticker, "Signal": "Error"})
+            ensemble_t = VotingClassifier(
+                estimators=[('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)],
+                voting='soft'
+            )
+            ensemble_t.fit(X_train, y_train)
 
-    # Store results in session state
+            latest = df_t[feature_cols].fillna(0).iloc[[-1]]
+            prob = ensemble_t.predict_proba(latest)[0][1]
+
+            results.append({
+                "Ticker": ticker,
+                "Sector": TICKERS[ticker],
+                "Signal": f"{prob:.1%}",
+                "Prob": prob
+            })
+        except Exception as e:
+            results.append({
+                "Ticker": ticker,
+                "Sector": TICKERS.get(ticker, "Unknown"),
+                "Signal": "Error",
+                "Prob": 0.0
+            })
+    return results
+
+# --- When scan button is clicked ---
+if scan_button:
+    with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
+        results = scan_tickers(ticker_list)
+
+    # Store in session state so it persists
     st.session_state.scanner_results = results
 
-# --- Display results if they exist in session state ---
-if st.session_state.scanner_results is not None:
-    st.subheader("📊 Scanner Results")
+# --- Display results if they exist ---
+if st.session_state.get('scanner_results'):
+    results = st.session_state.scanner_results
+
+    # Create DataFrame and sort by probability
+    df_results = pd.DataFrame(results)
+    df_results['Prob'] = pd.to_numeric(df_results['Prob'], errors='coerce')
+    df_results = df_results.sort_values('Prob', ascending=False).drop(columns='Prob')
+
+    # --- TOP BULLISH / BEARISH BOXES ---
+    col_bull, col_bear = st.columns(2)
+    bullish = df_results.iloc[0] if len(df_results) > 0 else None
+    bearish = df_results.iloc[-1] if len(df_results) > 1 else None
+
+    with col_bull:
+        st.success("🔥 **Most Bullish**")
+        if bullish is not None:
+            st.metric(bullish['Ticker'], bullish['Signal'], delta=None)
+            st.caption(f"Sector: {bullish['Sector']}")
+        else:
+            st.write("No data")
+
+    with col_bear:
+        st.error("🥶 **Most Bearish**")
+        if bearish is not None:
+            st.metric(bearish['Ticker'], bearish['Signal'], delta=None)
+            st.caption(f"Sector: {bearish['Sector']}")
+        else:
+            st.write("No data")
+
+    # --- COLOR‑CODED TABLE ---
+    st.subheader("📊 Full Scanner Results")
 
     def color_signal(val):
         try:
@@ -272,10 +375,10 @@ if st.session_state.scanner_results is not None:
         except:
             return 'background-color: #f5f5f5; color: #1e1e1e;'
 
-    styled_df = pd.DataFrame(st.session_state.scanner_results).style.applymap(color_signal, subset=['Signal'])
-    st.dataframe(styled_df)
+    styled_df = df_results.style.applymap(color_signal, subset=['Signal'])
+    st.dataframe(styled_df, use_container_width=True)
 
-    # --- Export button ---
-    if st.button("📥 Export Results to CSV"):
-        pd.DataFrame(st.session_state.scanner_results).to_csv("scanner_results.csv", index=False)
+    # --- EXPORT BUTTON ---
+    if st.button("📥 Export Scanner Results to CSV"):
+        df_results.to_csv("scanner_results.csv", index=False)
         st.success("✅ Saved as scanner_results.csv on your Desktop!")
