@@ -1,0 +1,32 @@
+# Secrets and local files
+.streamlit/
+git token.txt
+stripe backup code.txt
+keys_backup/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+env/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Project files
+*.xlsx
+*.txt
+*.lnk
+*.md
+Budget Sheet.xlsx
+Acquired Backlinks*.xlsx
+"New Haven*"
+"4031-6301*"
+Blog Post*
+Excellent question!*
+For over 10 years*
+Formula.txt
