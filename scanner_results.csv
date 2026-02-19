@@ -1,0 +1,41 @@
+Ticker,Sector,Signal
+MA,Financial,85.6%
+UNH,Healthcare,76.6%
+NFLX,Communication Services,70.6%
+AAPL,Technology,69.4%
+AMZN,Consumer Cyclical,67.9%
+ABT,Healthcare,62.7%
+GOOGL,Technology,62.2%
+BA,Industrials,61.1%
+DIS,Communication Services,56.0%
+META,Technology,54.6%
+MSFT,Technology,53.8%
+TSLA,Consumer Cyclical,53.6%
+WFC,Financial,51.1%
+V,Financial,46.2%
+PLD,Real Estate,46.1%
+INTC,Technology,44.0%
+AMD,Technology,42.8%
+HON,Industrials,40.9%
+SO,Utilities,37.8%
+JPM,Financial,37.5%
+DUK,Utilities,37.3%
+XOM,Energy,35.5%
+CVX,Energy,35.0%
+GE,Industrials,34.1%
+BAC,Financial,34.0%
+CAT,Industrials,31.6%
+NVDA,Technology,31.0%
+PFE,Healthcare,29.1%
+NEE,Utilities,29.0%
+MRK,Healthcare,29.0%
+SLB,Energy,28.5%
+WMT,Consumer Defensive,25.5%
+JNJ,Healthcare,24.5%
+PG,Consumer Defensive,22.1%
+KO,Consumer Defensive,19.9%
+GS,Financial,18.5%
+EQIX,Real Estate,17.4%
+COP,Energy,14.7%
+AMT,Real Estate,14.4%
+PEP,Consumer Defensive,10.6%

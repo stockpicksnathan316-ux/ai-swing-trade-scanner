@@ -8,6 +8,13 @@ from sklearn.metrics import accuracy_score, precision_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 import lightgbm as lgb
+import stripe
+import os
+
+# Initialize Stripe
+stripe.api_key = st.secrets["stripe_secret_key"]
+price_id = st.secrets["stripe_price_id"]
+base_url = st.secrets.get("base_url", "http://localhost:8501")  # fallback for local dev
 
 # --- Master ticker list with sectors ---
 TICKERS = {
@@ -75,6 +82,37 @@ def fetch_macro_data(period="1y"):
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
 
+# Handle Stripe return
+query_params = st.query_params.to_dict()
+
+if "session_id" in query_params:
+    session_id_raw = query_params["session_id"]
+    # session_id might be a string or a list
+    if isinstance(session_id_raw, list):
+        session_id = session_id_raw[0]
+    else:
+        session_id = session_id_raw
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        if session.payment_status == "paid":
+            st.session_state.paid_user = True
+            st.success("🎉 Payment successful! You now have unlimited access.")
+            st.query_params.clear()
+        else:
+            st.warning("Payment not completed. Please try again.")
+    except Exception as e:
+        st.error(f"Error verifying payment: {e}")
+
+if "payment" in query_params:
+    payment_raw = query_params["payment"]
+    if isinstance(payment_raw, list):
+        payment_val = payment_raw[0]
+    else:
+        payment_val = payment_raw
+    if payment_val == "cancelled":
+        st.info("Payment cancelled. You can still use the free tier.")
+        st.query_params.clear()
+
 # --- FREE TIER LIMITS & LICENSE KEY ---
 if 'scan_count' not in st.session_state:
     st.session_state.scan_count = 0
@@ -83,11 +121,12 @@ if 'paid_user' not in st.session_state:
 
 # License key input (sidebar)
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔑 Unlock Unlimited Scans")
+st.sidebar.subheader("Unlock Unlimited Scans")
 license_key_input = st.sidebar.text_input("Enter license key", type="password")
 if st.sidebar.button("Activate License"):
-    # Check against the secret license key
-    if license_key_input == st.secrets.get("license_key", "test123"):
+    # Check against the list of valid license keys
+    valid_keys = st.secrets.get("license_keys", ["test123"])
+    if license_key_input in valid_keys:
         st.session_state.paid_user = True
         st.sidebar.success("License activated! You now have unlimited scans.")
         st.rerun()
@@ -100,13 +139,34 @@ if st.session_state.paid_user:
 else:
     remaining = max(0, 5 - st.session_state.scan_count)
     st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
+
+
+if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
+    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-    if st.session_state.scan_count >= 5:
-        st.error("🚫 You've used all 5 free scans. Subscribe for unlimited access!")
-        if st.button("💳 Subscribe for $20/month (Test Mode)"):
-            st.success("🎉 Payment successful! (Test mode) Your license key is: TEST123")
-            st.session_state.paid_user = True
-        st.rerun()
+    # Stripe Checkout button
+if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
+    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
+    
+    # Stripe Checkout button
+    if st.button("💳 Upgrade to Pro ($20/month)"):
+        try:
+            checkout_session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price': price_id,
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url= base_url + "?payment=cancelled",
+            )
+            # Redirect to Stripe
+            st.markdown(f"""
+                <meta http-equiv="refresh" content="0; url={checkout_session.url}" />
+            """, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Failed to create checkout session: {e}")
 
 # ------------------- SIDEBAR / MAIN CHART -------------------
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
