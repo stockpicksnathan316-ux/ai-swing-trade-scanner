@@ -81,6 +81,7 @@ def fetch_macro_data(period="1y"):
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
+st.write("Available secret keys:", list(st.secrets.keys()))
 
 # Handle Stripe return
 query_params = st.query_params.to_dict()
