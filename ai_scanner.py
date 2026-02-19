@@ -81,12 +81,9 @@ def fetch_macro_data(period="1y"):
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
-st.write("Available secret keys:", list(st.secrets.keys()))
 
 # Handle Stripe return
-st.write("🔍 Checking for Stripe return...")
 query_params = st.query_params.to_dict()
-st.write("Query params received:", query_params)
 
 if "session_id" in query_params:
     session_id_raw = query_params["session_id"]
@@ -109,7 +106,6 @@ if "session_id" in query_params:
             st.warning(f"Payment not completed. Status: {session.payment_status}")
     except Exception as e:
         st.error(f"❌ Error verifying payment: {e}")
-        st.write("Full error details:", str(e))
 
 if "payment" in query_params:
     payment_raw = query_params["payment"]
@@ -157,6 +153,10 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
     # Stripe Checkout button
+if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
+    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
+    
+    # Stripe Checkout button
     if st.button("💳 Upgrade to Pro ($20/month)"):
         try:
             checkout_session = stripe.checkout.Session.create(
@@ -170,9 +170,7 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 cancel_url= base_url + "?payment=cancelled",
             )
             # Redirect to Stripe
-            st.markdown(f"""
-                <meta http-equiv="refresh" content="0; url={checkout_session.url}" />
-            """, unsafe_allow_html=True)
+            st.markdown(f"<meta http-equiv='refresh' content='0; url={checkout_session.url}' />", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"Failed to create checkout session: {e}")
 
