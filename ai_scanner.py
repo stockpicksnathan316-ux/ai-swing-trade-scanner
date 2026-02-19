@@ -7,7 +7,6 @@ from ta import add_all_ta_features
 from sklearn.metrics import accuracy_score, precision_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 import lightgbm as lgb
 
 # --- Master ticker list with sectors ---
@@ -75,6 +74,39 @@ def fetch_macro_data(period="1y"):
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
+
+# --- FREE TIER LIMITS & LICENSE KEY ---
+if 'scan_count' not in st.session_state:
+    st.session_state.scan_count = 0
+if 'paid_user' not in st.session_state:
+    st.session_state.paid_user = False
+
+# License key input (sidebar)
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔑 Unlock Unlimited Scans")
+license_key_input = st.sidebar.text_input("Enter license key", type="password")
+if st.sidebar.button("Activate License"):
+    # Check against the secret license key
+    if license_key_input == st.secrets.get("license_key", "test123"):
+        st.session_state.paid_user = True
+        st.sidebar.success("License activated! You now have unlimited scans.")
+        st.rerun()
+    else:
+        st.sidebar.error("Invalid license key")
+
+# Show status
+if st.session_state.paid_user:
+    st.sidebar.success("Premium subscriber - unlimited scans!")
+else:
+    remaining = max(0, 5 - st.session_state.scan_count)
+    st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
+    
+    if st.session_state.scan_count >= 5:
+        st.error("🚫 You've used all 5 free scans. Subscribe for unlimited access!")
+        if st.button("💳 Subscribe for $20/month (Test Mode)"):
+            st.success("🎉 Payment successful! (Test mode) Your license key is: TEST123")
+            st.session_state.paid_user = True
+        st.rerun()
 
 # ------------------- SIDEBAR / MAIN CHART -------------------
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
@@ -353,6 +385,7 @@ if scan_button:
     with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
         macro_data = fetch_macro_data(period="1y")
         results = scan_tickers(ticker_list, macro_data)
+        st.session_state.scan_count += 1
 
     # Store in session state so it persists
     st.session_state.scanner_results = results
