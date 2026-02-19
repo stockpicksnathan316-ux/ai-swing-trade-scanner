@@ -84,25 +84,32 @@ st.title("🤖 AI Momentum Predictor")
 st.write("Available secret keys:", list(st.secrets.keys()))
 
 # Handle Stripe return
+st.write("🔍 Checking for Stripe return...")
 query_params = st.query_params.to_dict()
+st.write("Query params received:", query_params)
 
 if "session_id" in query_params:
     session_id_raw = query_params["session_id"]
+    st.write("✅ session_id raw:", session_id_raw)
     # session_id might be a string or a list
     if isinstance(session_id_raw, list):
         session_id = session_id_raw[0]
     else:
         session_id = session_id_raw
+    st.write("✅ Extracted session_id:", session_id)
     try:
+        st.write("⏳ Retrieving session from Stripe...")
         session = stripe.checkout.Session.retrieve(session_id)
+        st.write("✅ Session retrieved. Payment status:", session.payment_status)
         if session.payment_status == "paid":
             st.session_state.paid_user = True
             st.success("🎉 Payment successful! You now have unlimited access.")
             st.query_params.clear()
         else:
-            st.warning("Payment not completed. Please try again.")
+            st.warning(f"Payment not completed. Status: {session.payment_status}")
     except Exception as e:
-        st.error(f"Error verifying payment: {e}")
+        st.error(f"❌ Error verifying payment: {e}")
+        st.write("Full error details:", str(e))
 
 if "payment" in query_params:
     payment_raw = query_params["payment"]
