@@ -137,7 +137,7 @@ if st.sidebar.button("Activate License"):
     else:
         st.sidebar.error("Invalid license key")
 
-# Show status
+# Show status (sidebar)
 if st.session_state.paid_user:
     st.sidebar.success("Premium subscriber - unlimited scans!")
 else:
@@ -148,8 +148,7 @@ else:
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-    # Stripe Checkout button
-        if st.button("📈 Upgrade to Pro ($20/month)"):
+    if st.button("📈 Upgrade to Pro ($20/month)"):
         st.write("🔹 Button clicked")  # temporary debug
         try:
             checkout_session = stripe.checkout.Session.create(
