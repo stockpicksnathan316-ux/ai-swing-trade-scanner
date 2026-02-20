@@ -138,13 +138,6 @@ if st.sidebar.button("Activate License"):
         st.sidebar.error("Invalid license key")
 
 # Show status (sidebar)
-if st.session_state.paid_user:
-    st.sidebar.success("Premium subscriber - unlimited scans!")
-else:
-    remaining = max(0, 5 - st.session_state.scan_count)
-    st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
-
-# If not paid and scans exhausted, show error and upgrade button
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
@@ -162,9 +155,16 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 cancel_url= base_url + "?payment=cancelled",
             )
             st.write("✅ Session created. URL:", checkout_session.url)  # temporary debug
-            # Store the URL in session state and rerun
-            st.session_state.checkout_url = checkout_session.url
-            st.rerun()
+            # Show a clickable link as fallback
+            st.markdown(f"👉 [Click here if you are not redirected automatically]({checkout_session.url})")
+            # Attempt JavaScript redirect after a short delay
+            st.components.v1.html(f'''
+                <script>
+                setTimeout(function() {{
+                    window.location.replace("{checkout_session.url}");
+                }}, 1500);
+                </script>
+            ''', height=0, width=0)
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
