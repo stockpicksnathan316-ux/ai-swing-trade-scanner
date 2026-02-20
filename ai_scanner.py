@@ -150,8 +150,8 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url=base_url + "?session_id={CHECKOUT_SESSION_ID}",
-                cancel_url=base_url + "?payment=cancelled",
+                success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url= base_url + "?payment=cancelled",
             )
             # Show clickable link
             st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
