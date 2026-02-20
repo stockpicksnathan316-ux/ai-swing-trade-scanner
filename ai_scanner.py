@@ -165,14 +165,7 @@ if "checkout_url" in st.session_state:
     st.success("✅ Ready to subscribe! Click the button below to complete your payment.")
     st.link_button("💳 Pay $20/month and unlock unlimited scans", url)
     # Optionally, you can clear the stored URL after some time, but leaving it for the session is fine.
-
-# Show status (sidebar)
-if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
-    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
-
-
-
-
+    
 # If we have a stored checkout URL, redirect to it
 if "checkout_url" in st.session_state:
     url = st.session_state.checkout_url
