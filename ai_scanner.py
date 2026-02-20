@@ -155,9 +155,7 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
             cancel_url= base_url + "?payment=cancelled",
             )
             # Show clickable link
-            st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
-            # Attempt meta refresh after 2 seconds
-            st.markdown(f'<meta http-equiv="refresh" content="2; url={checkout_session.url}">', unsafe_allow_html=True)
+            st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")            
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
