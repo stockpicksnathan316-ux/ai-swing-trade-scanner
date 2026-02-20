@@ -144,19 +144,12 @@ else:
     remaining = max(0, 5 - st.session_state.scan_count)
     st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
 
-
+# If not paid and scans exhausted, show error and upgrade button
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
     # Stripe Checkout button
-if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
-    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
-    
-    # Stripe Checkout button
-if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
-    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
-    
-    if st.button("💳 Upgrade to Pro ($20/month)"):
+    if st.button("📈 Upgrade to Pro ($20/month)"):
         st.write("Button clicked! Starting session creation...")
         try:
             st.write(f"Price ID from secrets: `{price_id}`")
@@ -172,8 +165,10 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
             )
             st.write("✅ Session created successfully!")
             st.write("Checkout URL:", checkout_session.url)
-            st.write("Redirecting via JavaScript...")
-            st.components.v1.html(f'<script>window.location.replace("{checkout_session.url}");</script>', height=0, width=0)
+            st.write("Redirecting in 2 seconds...")
+            # Meta refresh with a 2-second delay
+            st.markdown(f'<meta http-equiv="refresh" content="2; url={checkout_session.url}">', unsafe_allow_html=True)
+            st.write("If not redirected automatically, click this link:", checkout_session.url)
         except Exception as e:
             st.error(f"❌ Exception occurred: {e}")
             st.write("Full error details:", str(e))        
