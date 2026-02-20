@@ -148,9 +148,9 @@ else:
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-# Stripe Checkout button
-if st.button("📈 Upgrade to Pro ($20/month)"):
-    try:
+    # Stripe Checkout button
+    if st.button("📈 Upgrade to Pro ($20/month)"):
+        try:
             checkout_session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
                 line_items=[{
