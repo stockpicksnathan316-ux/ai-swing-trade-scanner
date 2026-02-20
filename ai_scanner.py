@@ -141,7 +141,6 @@ else:
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-    # This is the ONLY upgrade button in the whole app – make sure there are no others!
     if st.button("📈 Upgrade to Pro ($20/month)"):
         try:
             checkout_session = stripe.checkout.Session.create(
@@ -154,11 +153,12 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 success_url=base_url + "?session_id={CHECKOUT_SESSION_ID}",
                 cancel_url=base_url + "?payment=cancelled",
             )
-            # Store the URL in session state and rerun to show the payment link
-            st.session_state.checkout_url = checkout_session.url
-            st.rerun()
+            # Show clickable link
+            st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
+            # Attempt meta refresh after 2 seconds
+            st.markdown(f'<meta http-equiv="refresh" content="2; url={checkout_session.url}">', unsafe_allow_html=True)
         except Exception as e:
-            st.error(f"❌ Error creating checkout session: {e}")
+            st.error(f"❌ Error: {e}")
 
 # After button click, show a prominent button to go to Stripe
 if "checkout_url" in st.session_state:
@@ -171,7 +171,7 @@ if "checkout_url" in st.session_state:
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-    
+
             # Show clickable link
             st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
             # Attempt meta refresh after 2 seconds
