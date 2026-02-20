@@ -81,6 +81,11 @@ def fetch_macro_data(period="1y"):
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
+# Initialize session state for free tier and payment status
+if 'scan_count' not in st.session_state:
+    st.session_state.scan_count = 0
+if 'paid_user' not in st.session_state:
+    st.session_state.paid_user = False
 
 # Handle Stripe return
 query_params = st.query_params.to_dict()
