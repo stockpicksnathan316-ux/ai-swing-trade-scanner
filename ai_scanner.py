@@ -131,13 +131,14 @@ if st.sidebar.button("Activate License"):
     else:
         st.sidebar.error("Invalid license key")
 
-# --- Show subscription status and upgrade button ---
+# Show status (sidebar)
 if st.session_state.paid_user:
     st.sidebar.success("Premium subscriber - unlimited scans!")
 else:
     remaining = max(0, 5 - st.session_state.scan_count)
     st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
 
+# If not paid and scans exhausted, show error and upgrade button
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
@@ -153,7 +154,7 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
                 cancel_url= base_url + "?payment=cancelled",
             )
-            # Show clickable link
+            # Show clickable link (fallback)
             st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
             # Attempt meta refresh after 2 seconds
             st.markdown(f'<meta http-equiv="refresh" content="2; url={checkout_session.url}">', unsafe_allow_html=True)
