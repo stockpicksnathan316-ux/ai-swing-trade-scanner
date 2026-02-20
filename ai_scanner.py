@@ -156,24 +156,27 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-    # Stripe Checkout button
     if st.button("💳 Upgrade to Pro ($20/month)"):
-        st.write("Button clicked!")
-        try:
-            checkout_session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price': price_id,
-                    'quantity': 1,
-                }],
-                mode='subscription',
-                success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
-                cancel_url= base_url + "?payment=cancelled",
-            )
-            # Redirect using JavaScript
-            st.components.v1.html(f'<script>window.location.replace("{checkout_session.url}");</script>', height=0, width=0)
-        except Exception as e:
-            st.error(f"Failed to create checkout session: {e}")        
+    st.write("Button clicked! Starting session creation...")
+    try:
+        st.write(f"Price ID from secrets: `{price_id}`")
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price': price_id,
+                'quantity': 1,
+            }],
+            mode='subscription',
+            success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url= base_url + "?payment=cancelled",
+        )
+        st.write("✅ Session created successfully!")
+        st.write("Checkout URL:", checkout_session.url)
+        st.write("Redirecting via JavaScript...")
+        st.components.v1.html(f'<script>window.location.replace("{checkout_session.url}");</script>', height=0, width=0)
+    except Exception as e:
+        st.error(f"❌ Exception occurred: {e}")
+        st.write("Full error details:", str(e))        
 
 # ------------------- SIDEBAR / MAIN CHART -------------------
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
