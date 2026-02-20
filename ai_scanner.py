@@ -169,8 +169,9 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
                 cancel_url= base_url + "?payment=cancelled",
             )
-            # Redirect to Stripe
-            st.markdown(f"<meta http-equiv='refresh' content='0; url={checkout_session.url}' />", unsafe_allow_html=True)
+            # Show URL instead of auto-redirect (temporary debug)
+            st.write("Checkout URL:", checkout_session.url)
+            st.write("Open this URL manually in a new incognito tab.")
         except Exception as e:
             st.error(f"Failed to create checkout session: {e}")
 
