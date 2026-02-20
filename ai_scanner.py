@@ -145,16 +145,16 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
     if st.button("📈 Upgrade to Pro ($20/month)"):
         try:
             checkout_session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price': price_id,
-                    'quantity': 1,
-                }],
-                mode='subscription',
-                success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
-                cancel_url= base_url + "?payment=cancelled",
+            payment_method_types=['card'],
+            line_items=[{
+            'price': price_id,
+            'quantity': 1,
+            }],
+            mode='subscription',
+            success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url= base_url + "?payment=cancelled",
             )
-            # Show clickable link (fallback)
+            # Show clickable link
             st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
             # Attempt meta refresh after 2 seconds
             st.markdown(f'<meta http-equiv="refresh" content="2; url={checkout_session.url}">', unsafe_allow_html=True)
@@ -171,14 +171,9 @@ if "checkout_url" in st.session_state:
 # Show status (sidebar)
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
-    
 
-            # Show clickable link
-            st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
-            # Attempt meta refresh after 2 seconds
-            st.markdown(f'<meta http-equiv="refresh" content="2; url={checkout_session.url}">', unsafe_allow_html=True)
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+
+
 
 # If we have a stored checkout URL, redirect to it
 if "checkout_url" in st.session_state:
