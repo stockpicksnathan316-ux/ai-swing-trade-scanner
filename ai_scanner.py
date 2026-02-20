@@ -170,10 +170,10 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 cancel_url= base_url + "?payment=cancelled",
             )
             # Redirect using JavaScript
-        st.components.v1.html(f'<script>window.location.replace("{checkout_session.url}");</script
-    >', height=0, width=0)
-        except Exception as e:
-            st.error(f"Failed to create checkout session: {e}")
+            st.components.v1.html(f'<script>window.location.replace("{checkout_session.url}");</script
+        >', height=0, width=0)
+            except Exception as e:
+                st.error(f"Failed to create checkout session: {e}")        
 
 # ------------------- SIDEBAR / MAIN CHART -------------------
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
