@@ -149,7 +149,8 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
     # Stripe Checkout button
-    if st.button("📈 Upgrade to Pro ($20/month)"):
+        if st.button("📈 Upgrade to Pro ($20/month)"):
+        st.write("🔹 Button clicked")  # temporary debug
         try:
             checkout_session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
@@ -161,11 +162,12 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                 success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
                 cancel_url= base_url + "?payment=cancelled",
             )
+            st.write("✅ Session created. URL:", checkout_session.url)  # temporary debug
             # Store the URL in session state and rerun
             st.session_state.checkout_url = checkout_session.url
             st.rerun()
         except Exception as e:
-            st.error(f"Failed to create checkout session: {e}")
+            st.error(f"❌ Error: {e}")
 
 # If we have a stored checkout URL, redirect to it
 if "checkout_url" in st.session_state:
