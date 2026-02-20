@@ -158,6 +158,7 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
     
     # Stripe Checkout button
     if st.button("💳 Upgrade to Pro ($20/month)"):
+        st.write("Button clicked!")
         try:
             checkout_session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
