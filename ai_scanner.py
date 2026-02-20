@@ -85,37 +85,34 @@ st.title("🤖 AI Momentum Predictor")
 # Handle Stripe return
 query_params = st.query_params.to_dict()
 
-if "session_id" in query_params:
-    session_id_raw = query_params["session_id"]
-    st.write("✅ session_id raw:", session_id_raw)
-    # session_id might be a string or a list
-    if isinstance(session_id_raw, list):
-        session_id = session_id_raw[0]
-    else:
-        session_id = session_id_raw
-    st.write("✅ Extracted session_id:", session_id)
-    try:
-        st.write("⏳ Retrieving session from Stripe...")
-        session = stripe.checkout.Session.retrieve(session_id)
-        st.write("✅ Session retrieved. Payment status:", session.payment_status)
-        if session.payment_status == "paid":
-            st.session_state.paid_user = True
-            st.success("🎉 Payment successful! You now have unlimited access.")
-            st.query_params.clear()
-        else:
-            st.warning(f"Payment not completed. Status: {session.payment_status}")
-    except Exception as e:
-        st.error(f"❌ Error verifying payment: {e}")
+if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
+    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
+    
+    if st.button("📈 Upgrade to Pro ($20/month)"):
+        try:
+            checkout_session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price': price_id,
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url= base_url + "?payment=cancelled",
+            )
+            # Store the URL in session state to display after click
+            st.session_state.checkout_url = checkout_session.url
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
 
-if "payment" in query_params:
-    payment_raw = query_params["payment"]
-    if isinstance(payment_raw, list):
-        payment_val = payment_raw[0]
-    else:
-        payment_val = payment_raw
-    if payment_val == "cancelled":
-        st.info("Payment cancelled. You can still use the free tier.")
-        st.query_params.clear()
+# After button click, show a big button to go to Stripe
+if "checkout_url" in st.session_state:
+    url = st.session_state.checkout_url
+    st.success("✅ Ready to subscribe! Click the button below to complete your payment.")
+    st.link_button("💳 Pay $20/month and unlock unlimited scans", url)
+    # Optionally, clear the stored URL after showing the button, or keep it for the session
+    # You can also add a note that the link will open in a new tab.
 
 # --- FREE TIER LIMITS & LICENSE KEY ---
 if 'scan_count' not in st.session_state:
