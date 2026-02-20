@@ -81,18 +81,67 @@ def fetch_macro_data(period="1y"):
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
+
 # Initialize session state for free tier and payment status
 if 'scan_count' not in st.session_state:
     st.session_state.scan_count = 0
 if 'paid_user' not in st.session_state:
     st.session_state.paid_user = False
 
-# Handle Stripe return
+# Handle Stripe return (this should be before any other UI)
 query_params = st.query_params.to_dict()
+
+if "session_id" in query_params:
+    session_id_raw = query_params["session_id"]
+    if isinstance(session_id_raw, list):
+        session_id = session_id_raw[0]
+    else:
+        session_id = session_id_raw
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        if session.payment_status == "paid":
+            st.session_state.paid_user = True
+            st.success("🎉 Payment successful! You now have unlimited access.")
+            st.query_params.clear()
+        else:
+            st.warning("Payment not completed. Please try again.")
+    except Exception as e:
+        st.error("❌ Error verifying payment. Please contact support.")
+
+if "payment" in query_params:
+    payment_raw = query_params["payment"]
+    if isinstance(payment_raw, list):
+        payment_val = payment_raw[0]
+    else:
+        payment_val = payment_raw
+    if payment_val == "cancelled":
+        st.info("Payment cancelled. You can still use the free tier.")
+        st.query_params.clear()
+
+# --- License key input (sidebar) ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("Unlock Unlimited Scans")
+license_key_input = st.sidebar.text_input("Enter license key", type="password")
+if st.sidebar.button("Activate License"):
+    valid_keys = st.secrets.get("license_keys", ["test123"])
+    if license_key_input in valid_keys:
+        st.session_state.paid_user = True
+        st.sidebar.success("License activated! You now have unlimited scans.")
+        st.rerun()
+    else:
+        st.sidebar.error("Invalid license key")
+
+# --- Show subscription status and upgrade button ---
+if st.session_state.paid_user:
+    st.sidebar.success("Premium subscriber - unlimited scans!")
+else:
+    remaining = max(0, 5 - st.session_state.scan_count)
+    st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
 
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
+    # This is the ONLY upgrade button in the whole app – make sure there are no others!
     if st.button("📈 Upgrade to Pro ($20/month)"):
         try:
             checkout_session = stripe.checkout.Session.create(
@@ -102,42 +151,21 @@ if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", Fa
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
-                cancel_url= base_url + "?payment=cancelled",
+                success_url=base_url + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url=base_url + "?payment=cancelled",
             )
-            # Store the URL in session state to display after click
+            # Store the URL in session state and rerun to show the payment link
             st.session_state.checkout_url = checkout_session.url
             st.rerun()
         except Exception as e:
-            st.error(f"❌ Error: {e}")
+            st.error(f"❌ Error creating checkout session: {e}")
 
-# After button click, show a big button to go to Stripe
+# After button click, show a prominent button to go to Stripe
 if "checkout_url" in st.session_state:
     url = st.session_state.checkout_url
     st.success("✅ Ready to subscribe! Click the button below to complete your payment.")
     st.link_button("💳 Pay $20/month and unlock unlimited scans", url)
-    # Optionally, clear the stored URL after showing the button, or keep it for the session
-    # You can also add a note that the link will open in a new tab.
-
-# --- FREE TIER LIMITS & LICENSE KEY ---
-if 'scan_count' not in st.session_state:
-    st.session_state.scan_count = 0
-if 'paid_user' not in st.session_state:
-    st.session_state.paid_user = False
-
-# License key input (sidebar)
-st.sidebar.markdown("---")
-st.sidebar.subheader("Unlock Unlimited Scans")
-license_key_input = st.sidebar.text_input("Enter license key", type="password")
-if st.sidebar.button("Activate License"):
-    # Check against the list of valid license keys
-    valid_keys = st.secrets.get("license_keys", ["test123"])
-    if license_key_input in valid_keys:
-        st.session_state.paid_user = True
-        st.sidebar.success("License activated! You now have unlimited scans.")
-        st.rerun()
-    else:
-        st.sidebar.error("Invalid license key")
+    # Optionally, you can clear the stored URL after some time, but leaving it for the session is fine.
 
 # Show status (sidebar)
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
