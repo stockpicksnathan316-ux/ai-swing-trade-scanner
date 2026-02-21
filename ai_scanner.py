@@ -155,7 +155,7 @@ if st.button("📈 Upgrade to Pro ($20/month)"):
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-                'price': 'price_1T329xCzDC7DegJuhXlxOL3F',  # Your test price ID
+                'price': st.secrets["stripe_price_id"],
                 'quantity': 1,
             }],
             mode='subscription',
