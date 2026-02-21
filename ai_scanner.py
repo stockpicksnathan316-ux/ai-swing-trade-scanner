@@ -11,8 +11,12 @@ import lightgbm as lgb
 import stripe
 import os
 
+# At the top of your app, after imports
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = ""
+
 # Initialize Stripe
-stripe.api_key = st.secrets["stripe_secret_key"]
+stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
 price_id = st.secrets["stripe_price_id"]
 base_url = st.secrets.get("base_url", "http://localhost:8501")  # fallback for local dev
 
@@ -104,9 +108,9 @@ if "session_id" in query_params:
             st.success("🎉 Payment successful! You now have unlimited access.")
             st.query_params.clear()
         else:
-            st.warning("Payment not completed. Please try again.")
+            st.warning(f"Payment not completed. Status: {session.payment_status}")
     except Exception as e:
-        st.error("❌ Error verifying payment. Please contact support.")
+        st.error(f"❌ Error verifying payment: {e}")
 
 if "payment" in query_params:
     payment_raw = query_params["payment"]
@@ -132,32 +136,39 @@ if st.sidebar.button("Activate License"):
         st.sidebar.error("Invalid license key")
 
 # Show status (sidebar)
+
 if st.session_state.paid_user:
     st.sidebar.success("Premium subscriber - unlimited scans!")
 else:
     remaining = max(0, 5 - st.session_state.scan_count)
     st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
 
+# EMAIL INPUT - MOVED OUTSIDE THE BUTTON
+st.text_input("📧 Email for Pro access:", key="user_email")
+
 # If not paid and scans exhausted, show error and upgrade button
 if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
     st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
-    if st.button("📈 Upgrade to Pro ($20/month)"):
-        try:
-            checkout_session = stripe.checkout.Session.create(
+if st.button("📈 Upgrade to Pro ($20/month)"):
+    try:
+        checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-            'price': price_id,
-            'quantity': 1,
+                'price': 'price_1T329xCzDC7DegJuhXlxOL3F',  # Your test price ID
+                'quantity': 1,
             }],
             mode='subscription',
-            success_url= base_url + "?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url= base_url + "?payment=cancelled",
-            )
-            # Show clickable link
-            st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")            
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+            success_url=base_url + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=base_url + "?payment=cancelled",
+            customer_email=st.session_state.get("user_email", "")
+        )
+        # Store URL in session state for later use
+        st.session_state.checkout_url = checkout_session.url
+        # Show clickable link
+        st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
+    except Exception as e:
+        st.error(f"❌ Error creating checkout session: {e}")
 
 # After button click, show a prominent button to go to Stripe
 if "checkout_url" in st.session_state:
