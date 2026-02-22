@@ -44,49 +44,12 @@ stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
 price_id = st.secrets["stripe_price_id"]
 base_url = st.secrets.get("base_url", "http://localhost:8501")  # fallback for local dev
 
-# --- Master ticker list with sectors ---
-TICKERS = {
-    'AAPL': 'Technology',
-    'MSFT': 'Technology',
-    'GOOGL': 'Technology',
-    'META': 'Technology',
-    'NVDA': 'Technology',
-    'AMD': 'Technology',
-    'INTC': 'Technology',
-    'TSLA': 'Consumer Cyclical',
-    'AMZN': 'Consumer Cyclical',
-    'NFLX': 'Communication Services',
-    'DIS': 'Communication Services',
-    'JPM': 'Financial',
-    'BAC': 'Financial',
-    'WFC': 'Financial',
-    'GS': 'Financial',
-    'V': 'Financial',
-    'MA': 'Financial',
-    'JNJ': 'Healthcare',
-    'PFE': 'Healthcare',
-    'MRK': 'Healthcare',
-    'ABT': 'Healthcare',
-    'UNH': 'Healthcare',
-    'XOM': 'Energy',
-    'CVX': 'Energy',
-    'COP': 'Energy',
-    'SLB': 'Energy',
-    'BA': 'Industrials',
-    'CAT': 'Industrials',
-    'GE': 'Industrials',
-    'HON': 'Industrials',
-    'WMT': 'Consumer Defensive',
-    'PG': 'Consumer Defensive',
-    'KO': 'Consumer Defensive',
-    'PEP': 'Consumer Defensive',
-    'NEE': 'Utilities',
-    'DUK': 'Utilities',
-    'SO': 'Utilities',
-    'PLD': 'Real Estate',
-    'AMT': 'Real Estate',
-    'EQIX': 'Real Estate',
-}
+import pandas as pd
+
+# Load tickers from CSV
+tickers_df = pd.read_csv('tickers.csv')
+TICKERS = dict(zip(tickers_df['Symbol'], tickers_df['Sector']))
+
 # --- Macro data symbols ---
 MACRO_SYMBOLS = {
     'VIX': '^VIX',

@@ -1,0 +1,124 @@
+Symbol,Sector
+AAPL,Technology
+MSFT,Technology
+GOOGL,Technology
+META,Technology
+NVDA,Technology
+AMD,Technology
+INTC,Technology
+CSCO,Technology
+ORCL,Technology
+CRM,Technology
+ADBE,Technology
+QCOM,Technology
+TXN,Technology
+AVGO,Technology
+NFLX,Communication Services
+SNOW,Technology
+PLTR,Technology
+SHOP,Technology
+UBER,Technology
+LYFT,Technology
+PINS,Technology
+SNAP,Technology
+ZM,Technology
+DOCU,Technology
+OKTA,Technology
+NET,Technology
+DDOG,Technology
+MDB,Technology
+CRWD,Technology
+ZS,Technology
+TSLA,Consumer Cyclical
+AMZN,Consumer Cyclical
+HD,Consumer Cyclical
+LOW,Consumer Cyclical
+SBUX,Consumer Cyclical
+MCD,Consumer Cyclical
+NKE,Consumer Cyclical
+DIS,Communication Services
+CMCSA,Communication Services
+CHTR,Communication Services
+ROKU,Communication Services
+SPOT,Communication Services
+EA,Communication Services
+TTWO,Communication Services
+JPM,Financial
+BAC,Financial
+WFC,Financial
+GS,Financial
+MS,Financial
+V,Financial
+MA,Financial
+AXP,Financial
+C,Financial
+SCHW,Financial
+BLK,Financial
+KKR,Financial
+BX,Financial
+COIN,Financial
+JNJ,Healthcare
+PFE,Healthcare
+MRK,Healthcare
+ABT,Healthcare
+UNH,Healthcare
+LLY,Healthcare
+MRNA,Healthcare
+BNTX,Healthcare
+GILD,Healthcare
+AMGN,Healthcare
+VRTX,Healthcare
+ISRG,Healthcare
+BDX,Healthcare
+MDT,Healthcare
+SYK,Healthcare
+XOM,Energy
+CVX,Energy
+COP,Energy
+SLB,Energy
+EOG,Energy
+PSX,Energy
+VLO,Energy
+OXY,Energy
+MPC,Energy
+KMI,Energy
+BA,Industrials
+CAT,Industrials
+GE,Industrials
+HON,Industrials
+UPS,Industrials
+FDX,Industrials
+LMT,Industrials
+RTX,Industrials
+DE,Industrials
+MMM,Industrials
+WMT,Consumer Defensive
+PG,Consumer Defensive
+KO,Consumer Defensive
+PEP,Consumer Defensive
+COST,Consumer Defensive
+TGT,Consumer Defensive
+CL,Consumer Defensive
+KMB,Consumer Defensive
+MDLZ,Consumer Defensive
+MO,Consumer Defensive
+NEE,Utilities
+DUK,Utilities
+SO,Utilities
+D,Utilities
+AEP,Utilities
+EXC,Utilities
+SRE,Utilities
+PEG,Utilities
+ED,Utilities
+WEC,Utilities
+PLD,Real Estate
+AMT,Real Estate
+EQIX,Real Estate
+PSA,Real Estate
+O,Real Estate
+SPG,Real Estate
+WELL,Real Estate
+AVB,Real Estate
+EQR,Real Estate
+DLR,Real Estate
