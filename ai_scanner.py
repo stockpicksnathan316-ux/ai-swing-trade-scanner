@@ -10,10 +10,34 @@ from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 import lightgbm as lgb
 import stripe
 import os
+import requests
+
+def check_pro_status(email):
+    if not email:
+        return False
+    try:
+        response = requests.get(
+            "https://stripe-webhook-e7lr.onrender.com/check",
+            params={"email": email},
+            timeout=5
+        )
+        if response.status_code == 200:
+            return response.json().get('pro', False)
+    except Exception as e:
+        print(f"Error checking Pro status: {e}")
+    return False
 
 # At the top of your app, after imports
 if 'user_email' not in st.session_state:
     st.session_state.user_email = ""
+
+# After you have the user's email (e.g., from st.session_state.user_email)
+if st.session_state.user_email:
+    is_pro = check_pro_status(st.session_state.user_email)
+    if is_pro:
+        st.session_state.paid_user = True
+    else:
+        st.session_state.paid_user = False
 
 # Initialize Stripe
 stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
