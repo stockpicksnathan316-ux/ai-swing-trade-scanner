@@ -10,4 +10,4 @@ lightgbm
 stripe
 flask
 python-dotenv
-gunicornrequests 
+requests
