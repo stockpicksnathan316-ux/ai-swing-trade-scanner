@@ -11,8 +11,6 @@ import lightgbm as lgb
 import stripe
 import os
 import requests
-import joblib
-import feature_engineering as fe
 
 def check_pro_status(email):
     if not email:
@@ -26,7 +24,7 @@ def check_pro_status(email):
         if response.status_code == 200:
             return response.json().get('pro', False)
     except Exception as e:
-        
+        print(f"Error checking Pro status: {e}")
     return False
 
 # At the top of your app, after imports
@@ -71,55 +69,6 @@ def fetch_macro_data(period="1y"):
             macro_df[name] = pd.Series(dtype='float64')
     macro_df = macro_df.ffill().bfill()
     return macro_df
-
-@st.cache_data(ttl=86400)  # cache for 24 hours
-def get_macro_sector_data_cached(period="2y"):
-    """Fetch macro and sector data for the given period using feature_engineering, plus CL, and ensure all required columns exist."""
-    end = pd.Timestamp.now()
-    if period == "6mo":
-        start = end - pd.DateOffset(months=6)
-    elif period == "1y":
-        start = end - pd.DateOffset(years=1)
-    elif period == "2y":
-        start = end - pd.DateOffset(years=2)
-    else:
-        start = end - pd.DateOffset(years=1)
-
-    # Get base macro/sector data (VIX, TNX, sector ETFs)
-    macro_df = fe.get_macro_and_sector_data(start.date(), end.date())
-
-    # Add CL (oil futures) – this was missing
-    try:
-        cl = yf.download('CL=F', start=start, end=end, progress=False)['Close']
-        # Align to macro_df index
-        cl = cl.reindex(macro_df.index, method='ffill')
-        macro_df['CL'] = cl
-    except Exception as e:
-
-        # If CL fails, add a zero column with the same index
-        if not macro_df.empty:
-            macro_df['CL'] = 0
-        else:
-            # If macro_df is empty, create a dummy index and add zeros later
-            macro_df = pd.DataFrame(index=pd.date_range(start=start, end=end, freq='B'))
-
-    # --- Ensure all required sector columns are present (fill missing with zeros) ---
-    # Required columns are those in feature_cols that start with 'XL' or 'SPY', plus VIX, TNX, CL
-    required_cols = [col for col in feature_cols if col.startswith(('XL', 'SPY')) or col in ['VIX', 'TNX', 'CL']]
-    for col in required_cols:
-        if col not in macro_df.columns:
-            macro_df[col] = 0  # fill missing with zeros
-
-    return macro_df
-
-# Load enhanced model if available
-if os.path.exists('ensemble_model_v2.pkl'):
-    ensemble_model = joblib.load('ensemble_model_v2.pkl')
-    feature_cols = joblib.load('feature_cols_v2.pkl')
-    st.sidebar.success("✅ Loaded enhanced model v2")
-else:
-    st.sidebar.warning("Enhanced model not found, using original training")
-    ensemble_model = None  # we'll fall back to the old method later
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
@@ -433,28 +382,34 @@ else:
 # Show count
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
-@st.cache_data(ttl=21600)
-def scan_tickers(tickers, macro_sector_df):
+# --- Cached scanner function (refreshes every 6 hours) ---
+@st.cache_data(ttl=21600)  # 6 hours in seconds
+def scan_tickers(tickers, macro_df):
     results = []
     for ticker in tickers:
         try:
             df_t = yf.download(ticker, period="1y", progress=False)
-            if df_t.empty:
-                results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "No data", "Prob": 0.0})
-                continue
             if isinstance(df_t.columns, pd.MultiIndex):
                 df_t.columns = df_t.columns.droplevel(1)
 
-            df_t = add_all_ta_features(df_t, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
-            df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df)
+            df_t = add_all_ta_features(
+                df_t, open="Open", high="High", low="Low", close="Close",
+                volume="Volume", fillna=True
+            )
 
-            feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
+            # --- Merge macro data ---
+            df_t = df_t.join(macro_df, how='left').ffill().bfill()
+
+            feature_cols = [c for c in df_t.columns if c not in 
+                            ['Open','High','Low','Close','Volume']]
 
             split = int(len(df_t) * 0.8)
             train = df_t.iloc[:split]
+
             X_train = train[feature_cols].fillna(0)
             y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
 
+            # Quick ensemble for scanner (use same structure as main model)
             xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
             rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
             lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
@@ -463,28 +418,38 @@ def scan_tickers(tickers, macro_sector_df):
             rf_t.fit(X_train, y_train)
             lgb_t.fit(X_train, y_train)
 
-            ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
+            ensemble_t = VotingClassifier(
+                estimators=[('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)],
+                voting='soft'
+            )
             ensemble_t.fit(X_train, y_train)
 
             latest = df_t[feature_cols].fillna(0).iloc[[-1]]
             prob = ensemble_t.predict_proba(latest)[0][1]
 
-            results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": f"{prob:.1%}", "Prob": prob})
+            results.append({
+                "Ticker": ticker,
+                "Sector": TICKERS[ticker],
+                "Signal": f"{prob:.1%}",
+                "Prob": prob
+            })
         except Exception as e:
-            results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "Error", "Prob": 0.0})
+            results.append({
+                "Ticker": ticker,
+                "Sector": TICKERS.get(ticker, "Unknown"),
+                "Signal": "Error",
+                "Prob": 0.0
+            })
     return results
 
 # --- When scan button is clicked ---
 if scan_button:
     with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
-        # Fetch macro/sector data (cached)
-        macro_sector_df = get_macro_sector_data_cached("1y")
-        # Call scanner (now without model/feature_cols)
-        results = scan_tickers(ticker_list, macro_sector_df)
-        # Increment scan count (paywall)
+        macro_data = fetch_macro_data(period="1y")
+        results = scan_tickers(ticker_list, macro_data)
         st.session_state.scan_count += 1
 
-    # Store in session state
+    # Store in session state so it persists
     st.session_state.scanner_results = results
 
 # --- Display results if they exist ---
