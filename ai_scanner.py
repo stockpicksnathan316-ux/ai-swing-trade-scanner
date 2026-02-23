@@ -26,7 +26,7 @@ def check_pro_status(email):
         if response.status_code == 200:
             return response.json().get('pro', False)
     except Exception as e:
-        
+        print(f"Error checking Pro status: {e}") 
     return False
 
 # At the top of your app, after imports
