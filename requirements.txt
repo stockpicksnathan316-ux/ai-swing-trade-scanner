@@ -11,3 +11,4 @@ stripe
 flask
 python-dotenv
 requests
+supabase

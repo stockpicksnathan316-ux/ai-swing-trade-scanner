@@ -13,6 +13,11 @@ import os
 import requests
 import joblib
 import feature_engineering as fe
+import uuid
+import streamlit as st
+from datetime import datetime, timedelta
+from supabase import create_client
+
 
 def check_pro_status(email):
     if not email:
@@ -45,6 +50,87 @@ if st.session_state.user_email:
 stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
 price_id = st.secrets["stripe_price_id"]
 base_url = st.secrets.get("base_url", "http://localhost:8501")  # fallback for local dev
+
+# Initialize Supabase for free trial tracking
+supabase_url = st.secrets["SUPABASE_URL"]
+supabase_key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(supabase_url, supabase_key)
+
+# === SESSION MANAGEMENT FUNCTIONS (paste after Supabase init) ===
+def get_session_id():
+    """Get or create a persistent session ID using query param 'sid' (survives refreshes)"""
+    # Try to get from query params
+    params = st.query_params
+    session_id = params.get("sid")
+    
+    if not session_id or session_id == "":
+        session_id = str(uuid.uuid4())
+        # Store in query params (appears in URL)
+        params["sid"] = session_id
+        # Insert new session into Supabase with 0 scans
+        try:
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            print(f"Session insert warning: {e}")
+    
+    return session_id
+
+def get_free_scans_used(session_id):
+    """Get number of scans used for this session"""
+    try:
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        if response.data:
+            return response.data[0]["scans_used"]
+        else:
+            # Session missing – insert with 0
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0
+            }).execute()
+            return 0
+    except Exception as e:
+        print(f"Error getting scan count: {e}")
+        return 0
+
+def increment_free_scans(session_id):
+    """Add 1 to the scan count for this session (safe increment)"""
+    try:
+        # First, get the current count
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        
+        if response.data:
+            current = response.data[0]["scans_used"]
+            new_count = current + 1
+        else:
+            # If row missing (shouldn't happen), insert with 1
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 1,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+            return
+
+        # Update with new count
+        supabase.table("free_trial_usage") \
+            .update({
+                "scans_used": new_count,
+                "last_updated": datetime.now().isoformat()
+            }) \
+            .eq("session_id", session_id) \
+            .execute()
+    except Exception as e:
+        print(f"Error incrementing scan count: {e}")
+# === END OF SESSION FUNCTIONS ===
 
 import pandas as pd
 
@@ -112,35 +198,41 @@ def get_macro_sector_data_cached(period="2y"):
 
     return macro_df
 
-# Load enhanced model if available
-if os.path.exists('ensemble_model_v2.pkl'):
+# Load enhanced model if available (try v3 first, then v2)
+if os.path.exists('ensemble_model_v3.pkl'):
+    ensemble_model = joblib.load('ensemble_model_v3.pkl')
+    feature_cols = joblib.load('feature_cols_v3.pkl')
+    # 🔍 DEBUG: Verify model features
+    xgb_model = ensemble_model.named_estimators_['xgb']
+    st.sidebar.success("✅ Loaded enhanced model v3 (120 features)")
+elif os.path.exists('ensemble_model_v2.pkl'):
     ensemble_model = joblib.load('ensemble_model_v2.pkl')
     feature_cols = joblib.load('feature_cols_v2.pkl')
+    # 🔍 DEBUG: Verify model features
+    xgb_model = ensemble_model.named_estimators_['xgb']
     st.sidebar.success("✅ Loaded enhanced model v2")
 else:
     st.sidebar.warning("Enhanced model not found, using original training")
-    ensemble_model = None  # we'll fall back to the old method later
+    ensemble_model = None
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
 
 # Initialize session state for free tier and payment status
-if 'scan_count' not in st.session_state:
-    st.session_state.scan_count = 0
 if 'paid_user' not in st.session_state:
     st.session_state.paid_user = False
 
 # Handle Stripe return (this should be before any other UI)
 query_params = st.query_params.to_dict()
 
-if "session_id" in query_params:
-    session_id_raw = query_params["session_id"]
+if "stripe_session_id" in query_params:
+    session_id_raw = query_params["stripe_session_id"]
     if isinstance(session_id_raw, list):
-        session_id = session_id_raw[0]
+        stripe_session_id = session_id_raw[0]
     else:
-        session_id = session_id_raw
+        stripe_session_id = session_id_raw
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = stripe.checkout.Session.retrieve(stripe_session_id)
         if session.payment_status == "paid":
             st.session_state.paid_user = True
             st.success("🎉 Payment successful! You now have unlimited access.")
@@ -174,19 +266,18 @@ if st.sidebar.button("Activate License"):
         st.sidebar.error("Invalid license key")
 
 # Show status (sidebar)
-
 if st.session_state.paid_user:
     st.sidebar.success("Premium subscriber - unlimited scans!")
 else:
-    remaining = max(0, 5 - st.session_state.scan_count)
+    # Get current session's scan count from Supabase
+    session_id = get_session_id()  # This will create one if not exists
+    scans_used = get_free_scans_used(session_id)
+    remaining = max(0, 5 - scans_used)
     st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
 
 # EMAIL INPUT - MOVED OUTSIDE THE BUTTON
 st.text_input("📧 Email for Pro access:", key="user_email")
 
-# If not paid and scans exhausted, show error and upgrade button
-if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
-    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
 if st.button("📈 Upgrade to Pro ($20/month)"):
     try:
@@ -197,7 +288,7 @@ if st.button("📈 Upgrade to Pro ($20/month)"):
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=base_url + "?session_id={CHECKOUT_SESSION_ID}",
+            success_url=base_url + "?stripe_session_id={CHECKOUT_SESSION_ID}",
             cancel_url=base_url + "?payment=cancelled",
             customer_email=st.session_state.get("user_email", "")
         )
@@ -434,7 +525,7 @@ else:
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
 @st.cache_data(ttl=21600)
-def scan_tickers(tickers, macro_sector_df):
+def scan_tickers_fallback(tickers, macro_sector_df):
     results = []
     for ticker in tickers:
         try:
@@ -476,16 +567,27 @@ def scan_tickers(tickers, macro_sector_df):
 
 # --- When scan button is clicked ---
 if scan_button:
-    with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
-        # Fetch macro/sector data (cached)
-        macro_sector_df = get_macro_sector_data_cached("1y")
-        # Call scanner (now without model/feature_cols)
-        results = scan_tickers(ticker_list, macro_sector_df)
-        # Increment scan count (paywall)
-        st.session_state.scan_count += 1
-
-    # Store in session state
-    st.session_state.scanner_results = results
+    # Get session and check free trial
+    session_id = get_session_id()
+    scans_used = get_free_scans_used(session_id)
+    
+    # Check if user is Pro (from session state)
+    is_pro = st.session_state.get('paid_user', False)
+    
+    if not is_pro and scans_used >= 5:
+        st.sidebar.error("🔒 You've used all 5 free scans. Please upgrade to Pro for unlimited access!")
+        # You can also show an upgrade link here if you want
+    else:
+        with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
+            macro_sector_df = get_macro_sector_data_cached("1y")
+            results = scan_tickers_fallback(ticker_list, macro_sector_df)
+            
+            # Only increment if not Pro
+            if not is_pro:
+                increment_free_scans(session_id)
+            
+            st.session_state.scanner_results = results
+            st.rerun()  # Refresh to update UI with new count
 
 # --- Display results if they exist ---
 if st.session_state.get('scanner_results'):
