@@ -57,22 +57,42 @@ supabase_url = st.secrets["SUPABASE_URL"]
 supabase_key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(supabase_url, supabase_key)
 
+# --- Persistent session using localStorage (restores sid on fresh visits) ---
+def init_localstorage_session():
+    js_code = """
+    <script>
+    (function() {
+        // Only run if URL has no 'sid' parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        if (!urlParams.has('sid')) {
+            const storedSid = localStorage.getItem('scanner_session_id');
+            if (storedSid) {
+                // Add sid to URL and reload once
+                urlParams.set('sid', storedSid);
+                const newUrl = window.location.pathname + '?' + urlParams.toString();
+                window.location.replace(newUrl); // replaces current page, no history entry
+            }
+        } else {
+            // Save current sid to localStorage for future visits
+            localStorage.setItem('scanner_session_id', urlParams.get('sid'));
+        }
+    })();
+    </script>
+    """
+    st.components.v1.html(js_code, height=0, width=0)
+
+# Call it right after Supabase init
+init_localstorage_session()
+
 # === SESSION MANAGEMENT FUNCTIONS (paste after Supabase init) ===
 def get_session_id():
-    """Get or create a persistent session ID using a cookie."""
-    cookies = st.cookies
-    session_id = cookies.get("sid")
+    """Get session ID from URL params (generates new if none)."""
+    params = st.query_params
+    session_id = params.get("sid")
     
     if not session_id:
         session_id = str(uuid.uuid4())
-        # Set cookie for 1 year (max_age in seconds)
-        st.cookies.set(
-            "sid",
-            session_id,
-            max_age=365*24*60*60,
-            path="/"
-        )
-        # Insert new session into Supabase with 0 scans
+        params["sid"] = session_id
         try:
             supabase.table("free_trial_usage").insert({
                 "session_id": session_id,
@@ -219,6 +239,10 @@ elif os.path.exists('ensemble_model_v2.pkl'):
 else:
     st.sidebar.warning("Enhanced model not found, using original training")
     ensemble_model = None
+
+    # After model loading, ensure feature_cols is defined
+if 'feature_cols' not in locals():
+    feature_cols = []  # empty list, but the scanner will handle missing columns gracefully
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
@@ -442,7 +466,7 @@ if 'rsi' in df.columns:
             name='RSI Buy Signal'
         ))
 
-st.plotly_chart(fig, use_container_width='stretch')
+st.plotly_chart(fig, width='stretch')
 
 # --- Display main metrics ---
 col1, col2, col3 = st.columns(3)
@@ -640,7 +664,7 @@ if st.session_state.get('scanner_results'):
             return 'background-color: #f5f5f5; color: #1e1e1e;'
 
     styled_df = df_results.style.applymap(color_signal, subset=['Signal'])
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled_df, width='stretch')
 
     # --- EXPORT BUTTON ---
     if st.button("📥 Export Scanner Results to CSV"):
