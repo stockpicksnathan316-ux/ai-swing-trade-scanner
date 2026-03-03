@@ -18,6 +18,44 @@ import streamlit as st
 from datetime import datetime, timedelta
 from supabase import create_client
 
+# --- Persistent session using localStorage ---
+def init_persistent_session():
+    """Inject JavaScript to read/write session ID from localStorage."""
+    js_code = """
+    <script>
+    (function() {
+        // Get current URL params
+        const urlParams = new URLSearchParams(window.location.search);
+        let sid = urlParams.get('sid');
+        
+        // If no sid in URL, try localStorage
+        if (!sid) {
+            sid = localStorage.getItem('scanner_session_id');
+            if (sid) {
+                // Add sid to URL without reload
+                urlParams.set('sid', sid);
+                const newUrl = window.location.pathname + '?' + urlParams.toString();
+                window.history.replaceState(null, '', newUrl);
+                // Let Streamlit know about the new param (it will cause a rerun)
+                window.location.reload(); // Full reload to pick up the param
+            }
+        } else {
+            // Save to localStorage for future visits
+            localStorage.setItem('scanner_session_id', sid);
+        }
+    })();
+    </script>
+    """
+    st.components.v1.html(js_code, height=0, width=0)
+
+# Initialize Supabase for free trial tracking
+supabase_url = st.secrets["SUPABASE_URL"]
+supabase_key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(supabase_url, supabase_key)
+
+# Inject persistent session script
+init_persistent_session()
+
 
 def check_pro_status(email):
     if not email:
