@@ -14,47 +14,10 @@ import requests
 import joblib
 import feature_engineering as fe
 import uuid
-import streamlit as st
 from datetime import datetime, timedelta
 from supabase import create_client
 
-# --- Persistent session using localStorage ---
-def init_persistent_session():
-    """Inject JavaScript to read/write session ID from localStorage."""
-    js_code = """
-    <script>
-    (function() {
-        // Get current URL params
-        const urlParams = new URLSearchParams(window.location.search);
-        let sid = urlParams.get('sid');
-        
-        // If no sid in URL, try localStorage
-        if (!sid) {
-            sid = localStorage.getItem('scanner_session_id');
-            if (sid) {
-                // Add sid to URL without reload
-                urlParams.set('sid', sid);
-                const newUrl = window.location.pathname + '?' + urlParams.toString();
-                window.history.replaceState(null, '', newUrl);
-                // Let Streamlit know about the new param (it will cause a rerun)
-                window.location.reload(); // Full reload to pick up the param
-            }
-        } else {
-            // Save to localStorage for future visits
-            localStorage.setItem('scanner_session_id', sid);
-        }
-    })();
-    </script>
-    """
-    st.components.v1.html(js_code, height=0, width=0)
 
-# Initialize Supabase for free trial tracking
-supabase_url = st.secrets["SUPABASE_URL"]
-supabase_key = st.secrets["SUPABASE_KEY"]
-supabase = create_client(supabase_url, supabase_key)
-
-# Inject persistent session script
-init_persistent_session()
 
 
 def check_pro_status(email):
@@ -96,15 +59,19 @@ supabase = create_client(supabase_url, supabase_key)
 
 # === SESSION MANAGEMENT FUNCTIONS (paste after Supabase init) ===
 def get_session_id():
-    """Get or create a persistent session ID using query param 'sid' (survives refreshes)"""
-    # Try to get from query params
-    params = st.query_params
-    session_id = params.get("sid")
+    """Get or create a persistent session ID using a cookie."""
+    cookies = st.cookies
+    session_id = cookies.get("sid")
     
-    if not session_id or session_id == "":
+    if not session_id:
         session_id = str(uuid.uuid4())
-        # Store in query params (appears in URL)
-        params["sid"] = session_id
+        # Set cookie for 1 year (max_age in seconds)
+        st.cookies.set(
+            "sid",
+            session_id,
+            max_age=365*24*60*60,
+            path="/"
+        )
         # Insert new session into Supabase with 0 scans
         try:
             supabase.table("free_trial_usage").insert({
@@ -255,6 +222,7 @@ else:
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
+st.write("Cookies from browser:", dict(st.cookies))
 
 # Initialize session state for free tier and payment status
 if 'paid_user' not in st.session_state:
