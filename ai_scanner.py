@@ -222,7 +222,6 @@ else:
 
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
-st.write("Cookies from browser:", dict(st.cookies))
 
 # Initialize session state for free tier and payment status
 if 'paid_user' not in st.session_state:
