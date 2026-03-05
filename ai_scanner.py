@@ -355,14 +355,24 @@ if st.session_state.auto_refresh:
 # --- Load main data ---
 df = yf.download(ticker, period=period, progress=False)
 
+if df.empty:
+    st.error(f"❌ No data found for {ticker} for period {period}. Please try another ticker or period.")
+    st.stop()
+
 # --- Flatten MultiIndex if present ---
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.droplevel(1)
 
-# --- Add all technical indicators ---
-df = add_all_ta_features(
-    df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True
-)
+# --- Add all technical indicators (with safety checks) ---
+if df.empty or len(df) < 10:
+    st.warning(f"Insufficient data for {ticker} to compute technical indicators. Using raw data only.")
+else:
+    try:
+        df = add_all_ta_features(
+            df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True
+        )
+    except Exception as e:
+        st.warning(f"Could not compute technical indicators: {e}. Using raw data only.")
 
 # --- Merge macro data ---
 macro_data = fetch_macro_data(period=period)
@@ -565,7 +575,16 @@ def scan_tickers_fallback(tickers, macro_sector_df):
             if isinstance(df_t.columns, pd.MultiIndex):
                 df_t.columns = df_t.columns.droplevel(1)
 
-            df_t = add_all_ta_features(df_t, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+            if df_t.empty or len(df_t) < 10:
+                # Not enough data to compute indicators; continue without TA features
+                pass
+            else:
+                try:
+                    df_t = add_all_ta_features(df_t, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+                except Exception as e:
+                    print(f"TA indicator error for {ticker}: {e}")
+                    # Continue with raw data
+
             df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df)
 
             feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
