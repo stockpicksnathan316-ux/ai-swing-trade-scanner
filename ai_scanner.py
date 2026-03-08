@@ -17,8 +17,118 @@ import uuid
 from datetime import datetime, timedelta
 from supabase import create_client
 
+def safe_add_ta_features(df, min_rows=10):
+    if df is None or len(df) < min_rows:
+        st.warning(f"Insufficient data ({len(df) if df is not None else 0} rows) to compute technical indicators. Using raw price data only.")
+        return df
+    try:
+        df_ta = df.copy()
+        df_ta = add_all_ta_features(df_ta, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+        return df_ta
+    except Exception as e:
+        st.warning(f"Technical indicator calculation failed: {str(e)}. Using raw price data only.")
+        return df
 
+# === SESSION MANAGEMENT FUNCTIONS (URL + localStorage) ===
+def get_session_id():
+    """Get session ID from URL params (generates new if none)."""
+    params = st.query_params
+    session_id = params.get("sid")
+    
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        params["sid"] = session_id
+        try:
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            print(f"Session insert warning: {e}")
+    
+    return session_id
 
+def get_free_scans_used(session_id):
+    """Get number of scans used for this session"""
+    try:
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        if response.data:
+            return response.data[0]["scans_used"]
+        else:
+            # Session missing – insert with 0
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0
+            }).execute()
+            return 0
+    except Exception as e:
+        print(f"Error getting scan count: {e}")
+        return 0
+
+def increment_free_scans(session_id):
+    """Add 1 to the scan count for this session (safe increment)"""
+    try:
+        # First, get the current count
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        
+        if response.data:
+            current = response.data[0]["scans_used"]
+            new_count = current + 1
+        else:
+            # If row missing (shouldn't happen), insert with 1
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 1,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+            return
+
+        # Update with new count
+        supabase.table("free_trial_usage") \
+            .update({
+                "scans_used": new_count,
+                "last_updated": datetime.now().isoformat()
+            }) \
+            .eq("session_id", session_id) \
+            .execute()
+    except Exception as e:
+        print(f"Error incrementing scan count: {e}")
+
+def init_persistent_session():
+    """Inject JavaScript to persist session ID in localStorage."""
+    js_code = """
+    <script>
+    (function() {
+        // Get current URL params
+        const urlParams = new URLSearchParams(window.location.search);
+        let sid = urlParams.get('sid');
+        
+        // If no sid in URL, try localStorage
+        if (!sid) {
+            sid = localStorage.getItem('scanner_session_id');
+            if (sid) {
+                // Add sid to URL without reload
+                urlParams.set('sid', sid);
+                const newUrl = window.location.pathname + '?' + urlParams.toString();
+                window.history.replaceState(null, '', newUrl);
+                // Let Streamlit know about the new param (it will cause a rerun)
+                window.location.reload(); // Full reload to pick up the param
+            }
+        } else {
+            // Save to localStorage for future visits
+            localStorage.setItem('scanner_session_id', sid);
+        }
+    })();
+    </script>
+    """
+    st.components.v1.html(js_code, height=0, width=0)
 
 def check_pro_status(email):
     if not email:
@@ -57,52 +167,10 @@ supabase_url = st.secrets["SUPABASE_URL"]
 supabase_key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(supabase_url, supabase_key)
 
-# --- Persistent session using localStorage (restores sid on fresh visits) ---
-def init_localstorage_session():
-    js_code = """
-    <script>
-    (function() {
-        // Only run if URL has no 'sid' parameter
-        const urlParams = new URLSearchParams(window.location.search);
-        if (!urlParams.has('sid')) {
-            const storedSid = localStorage.getItem('scanner_session_id');
-            if (storedSid) {
-                // Add sid to URL and reload once
-                urlParams.set('sid', storedSid);
-                const newUrl = window.location.pathname + '?' + urlParams.toString();
-                window.location.replace(newUrl); // replaces current page, no history entry
-            }
-        } else {
-            // Save current sid to localStorage for future visits
-            localStorage.setItem('scanner_session_id', urlParams.get('sid'));
-        }
-    })();
-    </script>
-    """
-    st.components.v1.html(js_code, height=0, width=0)
+# Inject persistent session script
+init_persistent_session()
 
-# Call it right after Supabase init
-init_localstorage_session()
 
-# === SESSION MANAGEMENT FUNCTIONS (paste after Supabase init) ===
-def get_session_id():
-    """Get session ID from URL params (generates new if none)."""
-    params = st.query_params
-    session_id = params.get("sid")
-    
-    if not session_id:
-        session_id = str(uuid.uuid4())
-        params["sid"] = session_id
-        try:
-            supabase.table("free_trial_usage").insert({
-                "session_id": session_id,
-                "scans_used": 0,
-                "last_updated": datetime.now().isoformat()
-            }).execute()
-        except Exception as e:
-            print(f"Session insert warning: {e}")
-    
-    return session_id
 
 def get_free_scans_used(session_id):
     """Get number of scans used for this session"""
@@ -363,16 +431,8 @@ if df.empty:
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.droplevel(1)
 
-# --- Add all technical indicators (with safety checks) ---
-if df.empty or len(df) < 10:
-    st.warning(f"Insufficient data for {ticker} to compute technical indicators. Using raw data only.")
-else:
-    try:
-        df = add_all_ta_features(
-            df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True
-        )
-    except Exception as e:
-        st.warning(f"Could not compute technical indicators: {e}. Using raw data only.")
+#----Add all technical indicators safely---
+df = safe_add_ta_features(df)
 
 # --- Merge macro data ---
 macro_data = fetch_macro_data(period=period)
@@ -572,18 +632,12 @@ def scan_tickers_fallback(tickers, macro_sector_df):
             if df_t.empty:
                 results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "No data", "Prob": 0.0})
                 continue
+
             if isinstance(df_t.columns, pd.MultiIndex):
                 df_t.columns = df_t.columns.droplevel(1)
 
-            if df_t.empty or len(df_t) < 10:
-                # Not enough data to compute indicators; continue without TA features
-                pass
-            else:
-                try:
-                    df_t = add_all_ta_features(df_t, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
-                except Exception as e:
-                    print(f"TA indicator error for {ticker}: {e}")
-                    # Continue with raw data
+            # Safely add technical indicators (handles short data and errors)
+            df_t = safe_add_ta_features(df_t)
 
             df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df)
 
