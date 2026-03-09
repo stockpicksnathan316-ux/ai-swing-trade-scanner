@@ -112,6 +112,10 @@ def get_macro_and_sector_data(start_date, end_date):
         all_cols = ['VIX', 'TNX'] + list(sector_df.columns) if not sector_df.empty else ['VIX', 'TNX']
         return pd.DataFrame(columns=all_cols)
 
+    # Convert vix_df index to datetime if it's not already
+    if not pd.api.types.is_datetime64_any_dtype(vix_df.index):
+    vix_df.index = pd.to_datetime(vix_df.index)
+
     # Reindex all to base_index and forward fill
     vix_df = vix_df.reindex(base_index, method='ffill')
     yield_df = yield_df.reindex(base_index, method='ffill')
