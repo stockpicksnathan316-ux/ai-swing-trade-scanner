@@ -130,20 +130,7 @@ def init_persistent_session():
     """
     st.components.v1.html(js_code, height=0, width=0)
 
-def check_pro_status(email):
-    if not email:
-        return False
-    try:
-        response = requests.get(
-            "https://stripe-webhook-e7lr.onrender.com/check",
-            params={"email": email},
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json().get('pro', False)
-    except Exception as e:
-        print(f"Error checking Pro status: {e}") 
-    return False
+
 
 # At the top of your app, after imports
 if 'user_email' not in st.session_state:
@@ -151,7 +138,7 @@ if 'user_email' not in st.session_state:
 
 # After you have the user's email (e.g., from st.session_state.user_email)
 if st.session_state.user_email:
-    is_pro = check_pro_status(st.session_state.user_email)
+    is_pro = check_user_pro_status(st.session_state.user_email)
     if is_pro:
         st.session_state.paid_user = True
     else:
@@ -166,6 +153,27 @@ base_url = st.secrets.get("base_url", "http://localhost:8501")  # fallback for l
 supabase_url = st.secrets["SUPABASE_URL"]
 supabase_key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(supabase_url, supabase_key)
+
+def check_user_pro_status(email):
+    """Check Pro status directly from Supabase users table."""
+    if not email:
+        return False
+    try:
+        response = supabase.table("users").select("is_pro").eq("email", email).execute()
+        if response.data:
+            return response.data[0]["is_pro"]
+        else:
+            # User not found – create a record
+            supabase.table("users").insert({
+                "email": email,
+                "name": st.session_state.get("user_name", ""),
+                "created_at": datetime.now().isoformat(),
+                "is_pro": False
+            }).execute()
+            return False
+    except Exception as e:
+        print(f"Error checking Pro status: {e}")
+        return False
 
 # Inject persistent session script
 init_persistent_session()
