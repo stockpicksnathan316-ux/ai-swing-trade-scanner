@@ -22,8 +22,16 @@ st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 
 # ---------- Helper function (safe TA) ----------
 def safe_add_ta_features(df, min_rows=10):
-    # (keep as is)
-    ...
+    if df is None or len(df) < min_rows:
+        st.warning(f"Insufficient data ({len(df) if df is not None else 0} rows) to compute technical indicators. Using raw price data only.")
+        return df
+    try:
+        df_ta = df.copy()
+        df_ta = add_all_ta_features(df_ta, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+        return df_ta
+    except Exception as e:
+        st.warning(f"Technical indicator calculation failed: {str(e)}. Using raw price data only.")
+        return df
 
 # ---------- Stripe & Supabase Initialization ----------
 stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
@@ -34,18 +42,55 @@ supabase_url = st.secrets["SUPABASE_URL"]
 supabase_key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(supabase_url, supabase_key)
 
-# ---------- User management functions ----------
+# ---------- User management functions (email‑based) ----------
 def check_user_pro_status(email):
-    # ... (keep as is)
-    ...
+    """Check Pro status directly from Supabase users table."""
+    if not email:
+        return False
+    try:
+        response = supabase.table("users").select("is_pro").eq("email", email).execute()
+        if response.data:
+            return response.data[0]["is_pro"]
+        else:
+            # Create user record on first login
+            supabase.table("users").insert({
+                "email": email,
+                "name": st.session_state.get("user_name", ""),
+                "created_at": datetime.now().isoformat(),
+                "is_pro": False
+            }).execute()
+            return False
+    except Exception as e:
+        print(f"Error checking Pro status: {e}")
+        return False
 
 def get_user_scans_used(email):
-    # ... (keep as is)
-    ...
+    """Get number of scans used by this user."""
+    try:
+        response = supabase.table("user_usage").select("scans_used").eq("email", email).execute()
+        if response.data:
+            return response.data[0]["scans_used"]
+        else:
+            supabase.table("user_usage").insert({
+                "email": email,
+                "scans_used": 0,
+                "last_scan": datetime.now().isoformat()
+            }).execute()
+            return 0
+    except Exception as e:
+        print(f"Error getting scan count: {e}")
+        return 0
 
 def increment_user_scans(email):
-    # ... (keep as is)
-    ...
+    """Add 1 to the scan count for this user."""
+    try:
+        current = get_user_scans_used(email)
+        supabase.table("user_usage").update({
+            "scans_used": current + 1,
+            "last_scan": datetime.now().isoformat()
+        }).eq("email", email).execute()
+    except Exception as e:
+        print(f"Error incrementing scan count: {e}")
 
 # ========== GOOGLE OAUTH AUTHENTICATION ==========
 # Check if user is logged in
@@ -73,35 +118,6 @@ with st.sidebar:
 st.session_state['paid_user'] = check_user_pro_status(email)
 
 # ========== REST OF THE APP ==========
-# (The rest of your app code, as before, but without another st.set_page_config)
-
-# ========== GOOGLE OAUTH AUTHENTICATION ==========
-if not st.experimental_user.get("is_logged_in", False):
-    st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
-    st.title("🔐 AI Stock Scanner")
-    st.markdown("Please log in to continue:")
-    if st.button("🚀 Login with Google"):
-        st.login("google")
-    st.stop()   # Nothing else runs until logged in
-
-# User is now logged in
-email = st.experimental_user.email
-name = st.experimental_user.get("name", "User")
-st.session_state["user_email"] = email
-st.session_state["user_name"] = name
-
-# Logout button in sidebar (will appear after login)
-with st.sidebar:
-    st.markdown(f"👤 **{name}**")
-    st.markdown(f"📧 {email}")
-    if st.button("🚪 Logout"):
-        st.logout()
-
-# Check Pro status
-st.session_state['paid_user'] = check_user_pro_status(email)
-
-# ========== REST OF THE APP ==========
-st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
 
 # Initialize session state for payment status (already done above, but ensure)
@@ -205,6 +221,13 @@ if isinstance(df.columns, pd.MultiIndex):
 df = safe_add_ta_features(df)
 
 # --- Macro data ---
+# Define macro symbols before use
+MACRO_SYMBOLS = {
+    'VIX': '^VIX',
+    'TNX': '^TNX',
+    'CL': 'CL=F',
+}
+
 @st.cache_data(ttl=21600)
 def fetch_macro_data(period="1y"):
     macro_df = pd.DataFrame()
@@ -218,7 +241,6 @@ def fetch_macro_data(period="1y"):
     macro_df = macro_df.ffill().bfill()
     return macro_df
 
-MACRO_SYMBOLS = {'VIX': '^VIX', 'TNX': '^TNX', 'CL': 'CL=F'}
 macro_data = fetch_macro_data(period=period)
 df = df.join(macro_data, how='left').ffill().bfill()
 
@@ -297,7 +319,7 @@ col5.metric("📅 Latest Data", str(df.index[-1].date()))
 # --- Backtest expander ---
 if len(X_test) > 0:
     y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
-    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+    y_test_pred_class = (y_pred_proba > 0.5).astype(int)
     from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
     acc_test = accuracy_score(y_test, y_test_pred_class)
     prec_test = precision_score(y_test, y_test_pred_class, zero_division=0)
@@ -353,10 +375,44 @@ else:
 
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
-@st.cache_data(ttl=21600)
+@st.cache_data(ttl=86400)
 def get_macro_sector_data_cached(period="2y"):
-    # (keep your existing implementation unchanged)
-    ...
+    """Fetch macro and sector data for the given period using feature_engineering, plus CL, and ensure all required columns exist."""
+    end = pd.Timestamp.now()
+    if period == "6mo":
+        start = end - pd.DateOffset(months=6)
+    elif period == "1y":
+        start = end - pd.DateOffset(years=1)
+    elif period == "2y":
+        start = end - pd.DateOffset(years=2)
+    else:
+        start = end - pd.DateOffset(years=1)
+
+    # Get base macro/sector data (VIX, TNX, sector ETFs)
+    macro_df = fe.get_macro_and_sector_data(start.date(), end.date())
+
+    # Add CL (oil futures) – this was missing
+    try:
+        cl = yf.download('CL=F', start=start, end=end, progress=False)['Close']
+        # Align to macro_df index
+        cl = cl.reindex(macro_df.index, method='ffill')
+        macro_df['CL'] = cl
+    except Exception as e:
+        # If CL fails, add a zero column with the same index
+        if not macro_df.empty:
+            macro_df['CL'] = 0
+        else:
+            # If macro_df is empty, create a dummy index and add zeros later
+            macro_df = pd.DataFrame(index=pd.date_range(start=start, end=end, freq='B'))
+
+    # --- Ensure all required sector columns are present (fill missing with zeros) ---
+    # Required columns are those in feature_cols that start with 'XL' or 'SPY', plus VIX, TNX, CL
+    required_cols = [col for col in feature_cols if col.startswith(('XL', 'SPY')) or col in ['VIX', 'TNX', 'CL']]
+    for col in required_cols:
+        if col not in macro_df.columns:
+            macro_df[col] = 0  # fill missing with zeros
+
+    return macro_df
 
 @st.cache_data(ttl=21600)
 def scan_tickers_fallback(tickers, macro_sector_df):
