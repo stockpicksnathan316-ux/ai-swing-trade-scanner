@@ -11,21 +11,126 @@ import lightgbm as lgb
 import stripe
 import os
 import requests
+import joblib
+import feature_engineering as fe
+import uuid
+from datetime import datetime, timedelta
+from supabase import create_client
 
-def check_pro_status(email):
-    if not email:
-        return False
+def safe_add_ta_features(df, min_rows=10):
+    if df is None or len(df) < min_rows:
+        st.warning(f"Insufficient data ({len(df) if df is not None else 0} rows) to compute technical indicators. Using raw price data only.")
+        return df
     try:
-        response = requests.get(
-            "https://stripe-webhook-e7lr.onrender.com/check",
-            params={"email": email},
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json().get('pro', False)
+        df_ta = df.copy()
+        df_ta = add_all_ta_features(df_ta, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+        return df_ta
     except Exception as e:
-        print(f"Error checking Pro status: {e}")
-    return False
+        st.warning(f"Technical indicator calculation failed: {str(e)}. Using raw price data only.")
+        return df
+
+# === SESSION MANAGEMENT FUNCTIONS (URL + localStorage) ===
+def get_session_id():
+    """Get session ID from URL params (generates new if none)."""
+    params = st.query_params
+    session_id = params.get("sid")
+    
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        params["sid"] = session_id
+        try:
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            print(f"Session insert warning: {e}")
+    
+    return session_id
+
+def get_free_scans_used(session_id):
+    """Get number of scans used for this session"""
+    try:
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        if response.data:
+            return response.data[0]["scans_used"]
+        else:
+            # Session missing – insert with 0
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0
+            }).execute()
+            return 0
+    except Exception as e:
+        print(f"Error getting scan count: {e}")
+        return 0
+
+def increment_free_scans(session_id):
+    """Add 1 to the scan count for this session (safe increment)"""
+    try:
+        # First, get the current count
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        
+        if response.data:
+            current = response.data[0]["scans_used"]
+            new_count = current + 1
+        else:
+            # If row missing (shouldn't happen), insert with 1
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 1,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+            return
+
+        # Update with new count
+        supabase.table("free_trial_usage") \
+            .update({
+                "scans_used": new_count,
+                "last_updated": datetime.now().isoformat()
+            }) \
+            .eq("session_id", session_id) \
+            .execute()
+    except Exception as e:
+        print(f"Error incrementing scan count: {e}")
+
+def init_persistent_session():
+    """Inject JavaScript to persist session ID in localStorage."""
+    js_code = """
+    <script>
+    (function() {
+        // Get current URL params
+        const urlParams = new URLSearchParams(window.location.search);
+        let sid = urlParams.get('sid');
+        
+        // If no sid in URL, try localStorage
+        if (!sid) {
+            sid = localStorage.getItem('scanner_session_id');
+            if (sid) {
+                // Add sid to URL without reload
+                urlParams.set('sid', sid);
+                const newUrl = window.location.pathname + '?' + urlParams.toString();
+                window.history.replaceState(null, '', newUrl);
+                // Let Streamlit know about the new param (it will cause a rerun)
+                window.location.reload(); // Full reload to pick up the param
+            }
+        } else {
+            // Save to localStorage for future visits
+            localStorage.setItem('scanner_session_id', sid);
+        }
+    })();
+    </script>
+    """
+    st.components.v1.html(js_code, height=0, width=0)
+
+
 
 # At the top of your app, after imports
 if 'user_email' not in st.session_state:
@@ -33,7 +138,7 @@ if 'user_email' not in st.session_state:
 
 # After you have the user's email (e.g., from st.session_state.user_email)
 if st.session_state.user_email:
-    is_pro = check_pro_status(st.session_state.user_email)
+    is_pro = check_user_pro_status(st.session_state.user_email)
     if is_pro:
         st.session_state.paid_user = True
     else:
@@ -43,6 +148,90 @@ if st.session_state.user_email:
 stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
 price_id = st.secrets["stripe_price_id"]
 base_url = st.secrets.get("base_url", "http://localhost:8501")  # fallback for local dev
+
+# Initialize Supabase for free trial tracking
+supabase_url = st.secrets["SUPABASE_URL"]
+supabase_key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(supabase_url, supabase_key)
+
+def check_user_pro_status(email):
+    """Check Pro status directly from Supabase users table."""
+    if not email:
+        return False
+    try:
+        response = supabase.table("users").select("is_pro").eq("email", email).execute()
+        if response.data:
+            return response.data[0]["is_pro"]
+        else:
+            # User not found – create a record
+            supabase.table("users").insert({
+                "email": email,
+                "name": st.session_state.get("user_name", ""),
+                "created_at": datetime.now().isoformat(),
+                "is_pro": False
+            }).execute()
+            return False
+    except Exception as e:
+        print(f"Error checking Pro status: {e}")
+        return False
+
+# Inject persistent session script
+init_persistent_session()
+
+
+
+def get_free_scans_used(session_id):
+    """Get number of scans used for this session"""
+    try:
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        if response.data:
+            return response.data[0]["scans_used"]
+        else:
+            # Session missing – insert with 0
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 0
+            }).execute()
+            return 0
+    except Exception as e:
+        print(f"Error getting scan count: {e}")
+        return 0
+
+def increment_free_scans(session_id):
+    """Add 1 to the scan count for this session (safe increment)"""
+    try:
+        # First, get the current count
+        response = supabase.table("free_trial_usage") \
+            .select("scans_used") \
+            .eq("session_id", session_id) \
+            .execute()
+        
+        if response.data:
+            current = response.data[0]["scans_used"]
+            new_count = current + 1
+        else:
+            # If row missing (shouldn't happen), insert with 1
+            supabase.table("free_trial_usage").insert({
+                "session_id": session_id,
+                "scans_used": 1,
+                "last_updated": datetime.now().isoformat()
+            }).execute()
+            return
+
+        # Update with new count
+        supabase.table("free_trial_usage") \
+            .update({
+                "scans_used": new_count,
+                "last_updated": datetime.now().isoformat()
+            }) \
+            .eq("session_id", session_id) \
+            .execute()
+    except Exception as e:
+        print(f"Error incrementing scan count: {e}")
+# === END OF SESSION FUNCTIONS ===
 
 import pandas as pd
 
@@ -70,26 +259,85 @@ def fetch_macro_data(period="1y"):
     macro_df = macro_df.ffill().bfill()
     return macro_df
 
+@st.cache_data(ttl=86400)  # cache for 24 hours
+def get_macro_sector_data_cached(period="2y"):
+    """Fetch macro and sector data for the given period using feature_engineering, plus CL, and ensure all required columns exist."""
+    end = pd.Timestamp.now()
+    if period == "6mo":
+        start = end - pd.DateOffset(months=6)
+    elif period == "1y":
+        start = end - pd.DateOffset(years=1)
+    elif period == "2y":
+        start = end - pd.DateOffset(years=2)
+    else:
+        start = end - pd.DateOffset(years=1)
+
+    # Get base macro/sector data (VIX, TNX, sector ETFs)
+    macro_df = fe.get_macro_and_sector_data(start.date(), end.date())
+
+    # Add CL (oil futures) – this was missing
+    try:
+        cl = yf.download('CL=F', start=start, end=end, progress=False)['Close']
+        # Align to macro_df index
+        cl = cl.reindex(macro_df.index, method='ffill')
+        macro_df['CL'] = cl
+    except Exception as e:
+
+        # If CL fails, add a zero column with the same index
+        if not macro_df.empty:
+            macro_df['CL'] = 0
+        else:
+            # If macro_df is empty, create a dummy index and add zeros later
+            macro_df = pd.DataFrame(index=pd.date_range(start=start, end=end, freq='B'))
+
+    # --- Ensure all required sector columns are present (fill missing with zeros) ---
+    # Required columns are those in feature_cols that start with 'XL' or 'SPY', plus VIX, TNX, CL
+    required_cols = [col for col in feature_cols if col.startswith(('XL', 'SPY')) or col in ['VIX', 'TNX', 'CL']]
+    for col in required_cols:
+        if col not in macro_df.columns:
+            macro_df[col] = 0  # fill missing with zeros
+
+    return macro_df
+
+# Load enhanced model if available (try v3 first, then v2)
+if os.path.exists('ensemble_model_v3.pkl'):
+    ensemble_model = joblib.load('ensemble_model_v3.pkl')
+    feature_cols = joblib.load('feature_cols_v3.pkl')
+    # 🔍 DEBUG: Verify model features
+    xgb_model = ensemble_model.named_estimators_['xgb']
+    st.sidebar.success("✅ Loaded enhanced model v3 (120 features)")
+elif os.path.exists('ensemble_model_v2.pkl'):
+    ensemble_model = joblib.load('ensemble_model_v2.pkl')
+    feature_cols = joblib.load('feature_cols_v2.pkl')
+    # 🔍 DEBUG: Verify model features
+    xgb_model = ensemble_model.named_estimators_['xgb']
+    st.sidebar.success("✅ Loaded enhanced model v2")
+else:
+    st.sidebar.warning("Enhanced model not found, using original training")
+    ensemble_model = None
+
+    # After model loading, ensure feature_cols is defined
+if 'feature_cols' not in locals():
+    feature_cols = []  # empty list, but the scanner will handle missing columns gracefully
+
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
 st.title("🤖 AI Momentum Predictor")
 
 # Initialize session state for free tier and payment status
-if 'scan_count' not in st.session_state:
-    st.session_state.scan_count = 0
 if 'paid_user' not in st.session_state:
     st.session_state.paid_user = False
 
 # Handle Stripe return (this should be before any other UI)
 query_params = st.query_params.to_dict()
 
-if "session_id" in query_params:
-    session_id_raw = query_params["session_id"]
+if "stripe_session_id" in query_params:
+    session_id_raw = query_params["stripe_session_id"]
     if isinstance(session_id_raw, list):
-        session_id = session_id_raw[0]
+        stripe_session_id = session_id_raw[0]
     else:
-        session_id = session_id_raw
+        stripe_session_id = session_id_raw
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = stripe.checkout.Session.retrieve(stripe_session_id)
         if session.payment_status == "paid":
             st.session_state.paid_user = True
             st.success("🎉 Payment successful! You now have unlimited access.")
@@ -123,19 +371,18 @@ if st.sidebar.button("Activate License"):
         st.sidebar.error("Invalid license key")
 
 # Show status (sidebar)
-
 if st.session_state.paid_user:
     st.sidebar.success("Premium subscriber - unlimited scans!")
 else:
-    remaining = max(0, 5 - st.session_state.scan_count)
+    # Get current session's scan count from Supabase
+    session_id = get_session_id()  # This will create one if not exists
+    scans_used = get_free_scans_used(session_id)
+    remaining = max(0, 5 - scans_used)
     st.sidebar.info(f"Free tier: {remaining}/5 scans remaining")
 
 # EMAIL INPUT - MOVED OUTSIDE THE BUTTON
 st.text_input("📧 Email for Pro access:", key="user_email")
 
-# If not paid and scans exhausted, show error and upgrade button
-if st.session_state.scan_count >= 5 and not st.session_state.get("paid_user", False):
-    st.error("⚠️ You've used all 5 free scans. Subscribe for unlimited access!")
     
 if st.button("📈 Upgrade to Pro ($20/month)"):
     try:
@@ -146,7 +393,7 @@ if st.button("📈 Upgrade to Pro ($20/month)"):
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=base_url + "?session_id={CHECKOUT_SESSION_ID}",
+            success_url=base_url + "?stripe_session_id={CHECKOUT_SESSION_ID}",
             cancel_url=base_url + "?payment=cancelled",
             customer_email=st.session_state.get("user_email", "")
         )
@@ -184,14 +431,16 @@ if st.session_state.auto_refresh:
 # --- Load main data ---
 df = yf.download(ticker, period=period, progress=False)
 
+if df.empty:
+    st.error(f"❌ No data found for {ticker} for period {period}. Please try another ticker or period.")
+    st.stop()
+
 # --- Flatten MultiIndex if present ---
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.droplevel(1)
 
-# --- Add all technical indicators ---
-df = add_all_ta_features(
-    df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True
-)
+#----Add all technical indicators safely---
+df = safe_add_ta_features(df)
 
 # --- Merge macro data ---
 macro_data = fetch_macro_data(period=period)
@@ -295,7 +544,7 @@ if 'rsi' in df.columns:
             name='RSI Buy Signal'
         ))
 
-st.plotly_chart(fig, use_container_width='stretch')
+st.plotly_chart(fig, width='stretch')
 
 # --- Display main metrics ---
 col1, col2, col3 = st.columns(3)
@@ -382,34 +631,31 @@ else:
 # Show count
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
-# --- Cached scanner function (refreshes every 6 hours) ---
-@st.cache_data(ttl=21600)  # 6 hours in seconds
-def scan_tickers(tickers, macro_df):
+@st.cache_data(ttl=21600)
+def scan_tickers_fallback(tickers, macro_sector_df):
     results = []
     for ticker in tickers:
         try:
             df_t = yf.download(ticker, period="1y", progress=False)
+            if df_t.empty:
+                results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "No data", "Prob": 0.0})
+                continue
+
             if isinstance(df_t.columns, pd.MultiIndex):
                 df_t.columns = df_t.columns.droplevel(1)
 
-            df_t = add_all_ta_features(
-                df_t, open="Open", high="High", low="Low", close="Close",
-                volume="Volume", fillna=True
-            )
+            # Safely add technical indicators (handles short data and errors)
+            df_t = safe_add_ta_features(df_t)
 
-            # --- Merge macro data ---
-            df_t = df_t.join(macro_df, how='left').ffill().bfill()
+            df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df)
 
-            feature_cols = [c for c in df_t.columns if c not in 
-                            ['Open','High','Low','Close','Volume']]
+            feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
 
             split = int(len(df_t) * 0.8)
             train = df_t.iloc[:split]
-
             X_train = train[feature_cols].fillna(0)
             y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
 
-            # Quick ensemble for scanner (use same structure as main model)
             xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
             rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
             lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
@@ -418,39 +664,40 @@ def scan_tickers(tickers, macro_df):
             rf_t.fit(X_train, y_train)
             lgb_t.fit(X_train, y_train)
 
-            ensemble_t = VotingClassifier(
-                estimators=[('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)],
-                voting='soft'
-            )
+            ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
             ensemble_t.fit(X_train, y_train)
 
             latest = df_t[feature_cols].fillna(0).iloc[[-1]]
             prob = ensemble_t.predict_proba(latest)[0][1]
 
-            results.append({
-                "Ticker": ticker,
-                "Sector": TICKERS[ticker],
-                "Signal": f"{prob:.1%}",
-                "Prob": prob
-            })
+            results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": f"{prob:.1%}", "Prob": prob})
         except Exception as e:
-            results.append({
-                "Ticker": ticker,
-                "Sector": TICKERS.get(ticker, "Unknown"),
-                "Signal": "Error",
-                "Prob": 0.0
-            })
+            results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "Error", "Prob": 0.0})
     return results
 
 # --- When scan button is clicked ---
 if scan_button:
-    with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
-        macro_data = fetch_macro_data(period="1y")
-        results = scan_tickers(ticker_list, macro_data)
-        st.session_state.scan_count += 1
-
-    # Store in session state so it persists
-    st.session_state.scanner_results = results
+    # Get session and check free trial
+    session_id = get_session_id()
+    scans_used = get_free_scans_used(session_id)
+    
+    # Check if user is Pro (from session state)
+    is_pro = st.session_state.get('paid_user', False)
+    
+    if not is_pro and scans_used >= 5:
+        st.sidebar.error("🔒 You've used all 5 free scans. Please upgrade to Pro for unlimited access!")
+        # You can also show an upgrade link here if you want
+    else:
+        with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
+            macro_sector_df = get_macro_sector_data_cached("1y")
+            results = scan_tickers_fallback(ticker_list, macro_sector_df)
+            
+            # Only increment if not Pro
+            if not is_pro:
+                increment_free_scans(session_id)
+            
+            st.session_state.scanner_results = results
+            st.rerun()  # Refresh to update UI with new count
 
 # --- Display results if they exist ---
 if st.session_state.get('scanner_results'):
@@ -498,7 +745,7 @@ if st.session_state.get('scanner_results'):
             return 'background-color: #f5f5f5; color: #1e1e1e;'
 
     styled_df = df_results.style.applymap(color_signal, subset=['Signal'])
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled_df, width='stretch')
 
     # --- EXPORT BUTTON ---
     if st.button("📥 Export Scanner Results to CSV"):
