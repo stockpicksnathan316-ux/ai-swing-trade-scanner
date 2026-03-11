@@ -34,10 +34,12 @@ supabase_url = st.secrets["SUPABASE_URL"]
 supabase_key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(supabase_url, supabase_key)
 
-# Restore session if we have tokens in session state
-if 'supabase_session' in st.session_state:
+# Restore session if we have valid tokens in session state
+if 'supabase_session' in st.session_state and st.session_state.supabase_session is not None:
     session = st.session_state.supabase_session
-    supabase.auth.set_session(session['access_token'], session['refresh_token'])
+    # Ensure session has the required keys
+    if 'access_token' in session and 'refresh_token' in session:
+        supabase.auth.set_session(session['access_token'], session['refresh_token'])
 
 # ------------------- Email‑based tracking functions -------------------
 def get_user_scans_used(email):
