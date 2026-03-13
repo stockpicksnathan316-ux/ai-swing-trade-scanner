@@ -208,17 +208,9 @@ if not st.session_state.user_email:
         signup_submitted = st.form_submit_button("Sign Up")
         if signup_submitted:
             try:
-                # Sign up
+                # Sign up – no auto‑login
                 supabase.auth.sign_up({"email": new_email, "password": new_password})
-                # Immediately log in
-                login_res = supabase.auth.sign_in_with_password({"email": new_email, "password": new_password})
-                st.session_state.user_email = login_res.user.email
-                # Save the session tokens
-                st.session_state.supabase_session = {
-                'access_token': login_res.session.access_token,
-                'refresh_token': login_res.session.refresh_token
-                }
-                st.rerun()
+                st.sidebar.success("✅ Check your email for a confirmation link! You'll be able to log in after confirming.")
             except Exception as e:
                 st.sidebar.error(f"Signup failed: {e}")
     
