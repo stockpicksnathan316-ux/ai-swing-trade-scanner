@@ -201,10 +201,13 @@ if not st.session_state.user_email:
                 st.rerun()
             except Exception as e:
                 st.sidebar.error(f"Login failed: {e}")
+
+    st.sidebar.caption("🔐 Forgot your password? Email `stockpicksnathan316@gmail.com` and we'll help you reset it.")
     
     with st.sidebar.form("signup_form"):
         new_email = st.text_input("Email", key="signup_email")
         new_password = st.text_input("Password", type="password", key="signup_password")
+        st.caption("📧 **Please check your spam folder** for the confirmation email. Mark it as 'Not spam' so future emails land in your inbox.")
         signup_submitted = st.form_submit_button("Sign Up")
         if signup_submitted:
             try:
