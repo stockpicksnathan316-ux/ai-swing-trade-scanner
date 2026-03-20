@@ -15,6 +15,7 @@ import joblib
 import feature_engineering as fe
 from datetime import datetime, timedelta
 from supabase import create_client
+from feature_engineering import get_fundamentals
 
 # ------------------- Helper: safe technical indicators -------------------
 def safe_add_ta_features(df, min_rows=10):
@@ -104,6 +105,22 @@ def check_user_pro_status(email):
 tickers_df = pd.read_csv('tickers.csv')
 TICKERS = dict(zip(tickers_df['Symbol'], tickers_df['Sector']))
 
+# Sector to ETF mapping
+sector_to_etf = {
+    'Technology': 'XLK',
+    'Financials': 'XLF',
+    'Healthcare': 'XLV',
+    'Consumer Cyclical': 'XLY',
+    'Communication Services': 'XLC',   # may need to add XLC to SECTOR_ETFS list
+    'Industrials': 'XLI',
+    'Consumer Defensive': 'XLP',
+    'Energy': 'XLE',
+    'Utilities': 'XLU',
+    'Real Estate': 'XLRE',
+    'Basic Materials': 'XLB',
+    'Broad Market ETFs': 'SPY'          # for ETFs, compare to market itself
+}
+
 # ------------------- Macro symbols -------------------
 MACRO_SYMBOLS = {
     'VIX': '^VIX',
@@ -174,6 +191,16 @@ else:
 
 if 'feature_cols' not in locals():
     feature_cols = []
+
+# --- Load pooled model if available ---
+pooled_model = None
+pooled_feature_cols = None
+if os.path.exists('pooled_model.pkl') and os.path.exists('pooled_feature_cols.pkl'):
+    pooled_model = joblib.load('pooled_model.pkl')
+    pooled_feature_cols = joblib.load('pooled_feature_cols.pkl')
+    st.sidebar.success("✅ Loaded pooled model (trained on multiple stocks)")
+else:
+    st.sidebar.warning("Pooled model not found. Using per‑stock training (slower).")
 
 # ------------------- Page config -------------------
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
@@ -336,79 +363,106 @@ if st.session_state.auto_refresh:
     st_autorefresh(interval=300000, key="auto_refresh_timer")
 
 df = yf.download(ticker, period=period, progress=False)
-
 if df.empty:
     st.error(f"❌ No data found for {ticker} for period {period}. Please try another ticker or period.")
     st.stop()
-
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.droplevel(1)
-
 df = safe_add_ta_features(df)
-macro_data = fetch_macro_data(period=period)
-df = df.join(macro_data, how='left').ffill().bfill()
 
+# Get full macro + sector data (includes SPY, sector ETFs, VIX, TNX, CL)
+macro_sector_df = get_macro_sector_data_cached(period)
+
+# Fetch fundamentals and sector mapping
+fundamentals = get_fundamentals(ticker)
+ticker_sector = TICKERS.get(ticker, 'Unknown')
+sector_etf = sector_to_etf.get(ticker_sector, None)
+
+# Add enhanced features (relative strength, VIX changes, fundamentals, etc.)
+df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
+
+# Create target
 df['future_close'] = df['Close'].shift(-5)
 df['target'] = (df['future_close'] > df['Close']).astype(int)
 
-df_full = df.copy()
-df_clean = df.dropna().copy()
-
+# Prepare features and target, drop NaN
+df_clean = df.dropna(subset=['target']).copy()
 feature_columns = [col for col in df_clean.columns if col not in 
                    ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
 
 X = df_clean[feature_columns]
 y = df_clean['target']
 
+# Split into train/test
 split_idx = int(len(df_clean) * 0.8)
+X_train = X.iloc[:split_idx]
+y_train = y.iloc[:split_idx]
+X_test = X.iloc[split_idx:]
+y_test = y.iloc[split_idx:]
+
 df_train = df_clean.iloc[:split_idx].copy()
 df_test = df_clean.iloc[split_idx:].copy()
 
-X_train = df_train[feature_columns]
-y_train = df_train['target']
-X_test = df_test[feature_columns]
-y_test = df_test['target']
+# --- Use pooled model if available ---
+if pooled_model is not None and pooled_feature_cols is not None:
+    # Align test set to pooled features (fill missing with 0)
+    X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
+    y_test_pred_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+    acc = accuracy_score(y_test, y_test_pred_class)
+    prec = precision_score(y_test, y_test_pred_class, zero_division=0)
 
-# XGBoost tuning
-xgb_param_grid = {
-    'n_estimators': [50, 100, 200],
-    'max_depth': [2, 3, 4],
-    'learning_rate': [0.01, 0.05, 0.1]
-}
-xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
-xgb_grid = GridSearchCV(estimator=xgb_model, param_grid=xgb_param_grid,
-                        cv=3, scoring='accuracy', verbose=0, n_jobs=-1)
-xgb_grid.fit(X_train, y_train)
-xgb_best = xgb_grid.best_estimator_
-st.write(f"✅ Best XGBoost params: {xgb_grid.best_params_}")
-st.write(f"✅ XGBoost CV accuracy: {xgb_grid.best_score_:.2%}")
+    # Get latest row probability
+    latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+    live_prob = pooled_model.predict_proba(latest_features)[0][1]
 
-rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
-rf_model.fit(X_train, y_train)
+    xgb_best = pooled_model.named_estimators_['xgb']
+    st.write("🎯 **Using pooled model (trained on multiple stocks)**")
 
-lgb_model = lgb.LGBMClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, random_state=42, verbose=-1)
-lgb_model.fit(X_train, y_train)
+else:
+    # --- Fallback: original per‑stock training ---
+    # XGBoost tuning
+    xgb_param_grid = {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [2, 3, 4],
+        'learning_rate': [0.01, 0.05, 0.1],
+        'scale_pos_weight': [1, 1.5, 2, 3]
+    }
+    xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
+    xgb_grid = GridSearchCV(estimator=xgb_model, param_grid=xgb_param_grid,
+                            cv=3, scoring='accuracy', verbose=0, n_jobs=-1)
+    xgb_grid.fit(X_train, y_train)
+    xgb_best = xgb_grid.best_estimator_
+    st.write(f"✅ Best XGBoost params: {xgb_grid.best_params_}")
+    st.write(f"✅ XGBoost CV accuracy: {xgb_grid.best_score_:.2%}")
 
-ensemble_model = VotingClassifier(
-    estimators=[
-        ('xgb', xgb_best),
-        ('rf', rf_model),
-        ('lgb', lgb_model)
-    ],
-    voting='soft'
-)
-ensemble_model.fit(X_train, y_train)
+    rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
+    rf_model.fit(X_train, y_train)
 
-st.write("🎯 **Ensemble model trained with XGBoost, Random Forest, and LightGBM**")
+    lgb_model = lgb.LGBMClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, random_state=42, verbose=-1)
+    lgb_model.fit(X_train, y_train)
 
-y_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
-y_pred_class = (y_pred_proba > 0.5).astype(int)
+    ensemble_model = VotingClassifier(
+        estimators=[('xgb', xgb_best), ('rf', rf_model), ('lgb', lgb_model)],
+        voting='soft'
+    )
+    ensemble_model.fit(X_train, y_train)
 
-acc = accuracy_score(y_test, y_pred_class)
-prec = precision_score(y_test, y_pred_class, zero_division=0)
+    y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
+    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+    acc = accuracy_score(y_test, y_test_pred_class)
+    prec = precision_score(y_test, y_test_pred_class, zero_division=0)
 
-latest_row = df_full[feature_columns].fillna(0).iloc[[-1]]
-live_prob = ensemble_model.predict_proba(latest_row)[0][1]
+    latest_row = df_clean[feature_columns].fillna(0).iloc[[-1]]
+    live_prob = ensemble_model.predict_proba(latest_row)[0][1]
+
+    st.write("🎯 **Ensemble model trained with XGBoost, Random Forest, and LightGBM**")
+
+# Determine which feature list to use for importance
+if pooled_model is not None and pooled_feature_cols is not None:
+    importance_features = pooled_feature_cols
+else:
+    importance_features = feature_columns
 
 # Candlestick chart
 fig = go.Figure()
@@ -445,8 +499,7 @@ col5.metric("📅 Latest Data", str(df.index[-1].date()))
 
 # --- Backtest on test set (out-of-sample) ---
 if len(X_test) > 0:
-    y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
-    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+
 
     from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
     acc_test = accuracy_score(y_test, y_test_pred_class)
@@ -494,10 +547,22 @@ else:
 # --- Feature importance (optional) ---
 if st.checkbox("Show what XGBoost learned"):
     importance = pd.DataFrame({
-        'feature': feature_columns,
+        'feature': importance_features,
         'importance': xgb_best.feature_importances_
     }).sort_values('importance', ascending=False).head(10)
-    st.bar_chart(importance.set_index('feature'))
+
+    # Use Plotly for a clean horizontal bar chart with full labels
+    import plotly.express as px
+    fig = px.bar(importance, 
+                 x='importance', 
+                 y='feature', 
+                 orientation='h',
+                 title='Top 10 Feature Importances',
+                 labels={'importance': 'Importance', 'feature': ''})
+    fig.update_layout(yaxis={'categoryorder':'total ascending'},
+                      height=400,
+                      margin=dict(l=150))  # Extra left margin for long names
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ------------------- MULTI‑TICKER SCREENER -------------------
@@ -529,28 +594,44 @@ def scan_tickers_fallback(tickers, macro_sector_df):
                 df_t.columns = df_t.columns.droplevel(1)
 
             df_t = safe_add_ta_features(df_t)
-            df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df)
 
-            feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
+            # Get sector and fundamentals
+            fundamentals = get_fundamentals(ticker)
+            ticker_sector = TICKERS.get(ticker, 'Unknown')
+            sector_etf = sector_to_etf.get(ticker_sector, None)
 
-            split = int(len(df_t) * 0.8)
-            train = df_t.iloc[:split]
-            X_train = train[feature_cols].fillna(0)
-            y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
+            # Add enhanced features
+            df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df, sector_etf, fundamentals)
 
-            xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
-            rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
-            lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+            # If pooled model exists, use it
+            if pooled_model is not None and pooled_feature_cols is not None:
+                # Ensure all required features are present
+                for col in pooled_feature_cols:
+                    if col not in df_t.columns:
+                        df_t[col] = 0
+                latest = df_t[pooled_feature_cols].fillna(0).iloc[[-1]]
+                prob = pooled_model.predict_proba(latest)[0][1]
+            else:
+                # Fallback to per‑stock training
+                feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
+                split = int(len(df_t) * 0.8)
+                train = df_t.iloc[:split]
+                X_train = train[feature_cols].fillna(0)
+                y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
 
-            xgb_t.fit(X_train, y_train)
-            rf_t.fit(X_train, y_train)
-            lgb_t.fit(X_train, y_train)
+                xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+                rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
+                lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
 
-            ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
-            ensemble_t.fit(X_train, y_train)
+                xgb_t.fit(X_train, y_train)
+                rf_t.fit(X_train, y_train)
+                lgb_t.fit(X_train, y_train)
 
-            latest = df_t[feature_cols].fillna(0).iloc[[-1]]
-            prob = ensemble_t.predict_proba(latest)[0][1]
+                ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
+                ensemble_t.fit(X_train, y_train)
+
+                latest = df_t[feature_cols].fillna(0).iloc[[-1]]
+                prob = ensemble_t.predict_proba(latest)[0][1]
 
             results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": f"{prob:.1%}", "Prob": prob})
         except Exception as e:

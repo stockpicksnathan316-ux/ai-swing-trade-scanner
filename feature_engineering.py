@@ -5,7 +5,37 @@ import numpy as np
 import yfinance as yf
 
 # --- Sector ETFs (for sector momentum) ---
-SECTOR_ETFS = ['XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLY', 'XLB', 'XLRE', 'XLU']
+SECTOR_ETFS = ['XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLY', 'XLB', 'XLRE', 'XLU', 'XLC']
+
+# Cache for fundamentals to avoid repeated API calls
+_fundamentals_cache = {}
+
+def get_fundamentals(ticker):
+    """Fetch current fundamental data for a ticker using yfinance."""
+    if ticker in _fundamentals_cache:
+        return _fundamentals_cache[ticker]
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        # Extract a few key fundamentals (add more as needed)
+        fundamentals = {
+            'pe_ratio': info.get('trailingPE', 0),
+            'eps_ttm': info.get('trailingEps', 0),
+            'market_cap': info.get('marketCap', 0),
+            'dividend_yield': info.get('dividendYield', 0),
+            'profit_margins': info.get('profitMargins', 0),
+            'revenue_growth': info.get('revenueGrowth', 0),
+        }
+        # Convert None to 0
+        for k in fundamentals:
+            if fundamentals[k] is None:
+                fundamentals[k] = 0
+        _fundamentals_cache[ticker] = fundamentals
+        return fundamentals
+    except Exception as e:
+        print(f"Error fetching fundamentals for {ticker}: {e}")
+        # Return zeros as fallback
+        return {k: 0 for k in ['pe_ratio', 'eps_ttm', 'market_cap', 'dividend_yield', 'profit_margins', 'revenue_growth']}
 
 def get_yield_data(start_date, end_date):
     """
@@ -124,15 +154,44 @@ def get_macro_and_sector_data(start_date, end_date):
     combined = pd.concat([vix_df, yield_df, sector_df], axis=1)
     return combined
 
-def add_enhanced_features(stock_df, ticker, macro_sector_df):
-    """
-    Takes a stock OHLCV DataFrame (with columns Open, High, Low, Close, Volume) and the macro_sector_df.
-    Returns a copy with new features merged on the date index.
-    """
+def add_enhanced_features(stock_df, ticker, macro_sector_df, sector_etf=None, fundamentals=None):
     data = stock_df.copy()
     if not isinstance(data.index, pd.DatetimeIndex):
         data.index = pd.to_datetime(data.index)
+
+    # --- Join macro/sector data ---
     data = data.join(macro_sector_df, how='left')
+    data = data.ffill().bfill()          # fill any gaps
+
+    # --- Relative strength features ---
+    data['stock_ret_1d'] = data['Close'].pct_change()
+    data['stock_ret_5d'] = data['Close'].pct_change(5)
+
+    # Relative to SPY
+    if 'SPY_close_ret' in data.columns:
+        data['rel_strength_1d_vs_spy'] = data['stock_ret_1d'] - data['SPY_close_ret']
+        data['rel_strength_5d_vs_spy'] = data['stock_ret_5d'] - data['SPY_close_ret'].rolling(5).sum()
+
+    # Relative to sector ETF (if provided)
+    if sector_etf and f'{sector_etf}_close_ret' in data.columns:
+        sector_ret = data[f'{sector_etf}_close_ret']
+        data['rel_strength_1d_vs_sector'] = data['stock_ret_1d'] - sector_ret
+        data['rel_strength_5d_vs_sector'] = data['stock_ret_5d'] - sector_ret.rolling(5).sum()
+
+    # --- Enhanced market context ---
+    if 'VIX' in data.columns:
+        data['VIX_1d_chg'] = data['VIX'].pct_change()
+        data['VIX_5d_chg'] = data['VIX'].pct_change(5)
+
+    if 'TNX' in data.columns:
+        data['TNX_1d_chg'] = data['TNX'].pct_change()
+        data['TNX_5d_chg'] = data['TNX'].pct_change(5)
+
+    # --- Fundamental features (constant) ---
+    if fundamentals:
+        for key, value in fundamentals.items():
+            data[key] = value
+
     return data
 
 def prepare_training_data(ticker_list, start_date, end_date):
