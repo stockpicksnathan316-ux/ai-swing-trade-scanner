@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 from ta import add_all_ta_features
@@ -255,6 +256,17 @@ if st.sidebar.button("Logout"):
     st.session_state.supabase_session = None  # Clear saved tokens
     st.rerun()
 
+# --- Hybrid model weight ---
+alpha = st.sidebar.slider(
+    "Hybrid weight (pooled model)",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.7,
+    step=0.05,
+    help="Weight given to the market‑wide pooled model vs. the stock‑specific model."
+)
+st.sidebar.caption(f"Final = {alpha:.0%} pooled + {1-alpha:.0%} stock‑specific")
+
 st.title("🤖 AI Momentum Predictor")
 user = supabase.auth.get_user()
 st.write("Authenticated user:", user.user.email if user and user.user else "None")
@@ -405,19 +417,29 @@ df_test = df_clean.iloc[split_idx:].copy()
 
 # --- Use pooled model if available ---
 if pooled_model is not None and pooled_feature_cols is not None:
-    # Align test set to pooled features (fill missing with 0)
+    # 1. Pooled model predictions
     X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
-    y_test_pred_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+    pooled_test_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+    latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+    pooled_live_prob = pooled_model.predict_proba(latest_features)[0][1]
+
+    # 2. Stock‑specific model (simple XGBoost)
+    stock_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+    stock_model.fit(X_train, y_train)
+    stock_test_proba = stock_model.predict_proba(X_test)[:, 1]
+    latest_stock = df_clean[feature_columns].fillna(0).iloc[[-1]]
+    stock_live_prob = stock_model.predict_proba(latest_stock)[0][1]
+
+    # 3. Hybrid combination (adjust α as needed)
+    y_test_pred_proba = alpha * pooled_test_proba + (1 - alpha) * stock_test_proba
+    live_prob = alpha * pooled_live_prob + (1 - alpha) * stock_live_prob
+
     y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
     acc = accuracy_score(y_test, y_test_pred_class)
     prec = precision_score(y_test, y_test_pred_class, zero_division=0)
 
-    # Get latest row probability
-    latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
-    live_prob = pooled_model.predict_proba(latest_features)[0][1]
-
-    xgb_best = pooled_model.named_estimators_['xgb']
-    st.write("🎯 **Using pooled model (trained on multiple stocks)**")
+    xgb_best = pooled_model.named_estimators_['xgb']   # still use pooled model for feature importance
+    st.write("🎯 **Using hybrid model (70% pooled + 30% stock‑specific)**")
 
 else:
     # --- Fallback: original per‑stock training ---
@@ -499,8 +521,6 @@ col5.metric("📅 Latest Data", str(df.index[-1].date()))
 
 # --- Backtest on test set (out-of-sample) ---
 if len(X_test) > 0:
-
-
     from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
     acc_test = accuracy_score(y_test, y_test_pred_class)
     prec_test = precision_score(y_test, y_test_pred_class, zero_division=0)
@@ -540,6 +560,56 @@ if len(X_test) > 0:
         if len(trades) > 0:
             win_rate = (trades['strategy_return'] > 0).mean()
             st.metric("Win Rate (on trades)", f"{win_rate:.1%}")
+
+        # --- Probability Calibration (nested expander) ---
+        with st.expander("📊 Probability Calibration"):
+            # Define probability bins
+            bins = np.arange(0, 1.1, 0.1)   # 0-10%, 10-20%, ..., 90-100%
+            labels = [f"{int(b*100)}-{int((b+0.1)*100)}%" for b in bins[:-1]]
+            
+            # Assign each test prediction to a bin
+            df_test['prob_bin'] = pd.cut(df_test['pred_prob'], bins=bins, labels=labels, include_lowest=True)
+            
+            # Compute win rate per bin (win = next day return > 0)
+            bin_win_rate = df_test.groupby('prob_bin')['return'].apply(lambda x: (x > 0).mean()).fillna(0)
+            bin_count = df_test.groupby('prob_bin')['return'].count()
+            
+            # Create a calibration DataFrame
+            cal_df = pd.DataFrame({
+                'Probability Bin': bin_win_rate.index,
+                'Number of Trades': bin_count.values,
+                'Historical Win Rate': bin_win_rate.values
+            }).reset_index(drop=True)
+            
+            # Display the calibration table
+            st.dataframe(cal_df.style.format({'Historical Win Rate': '{:.1%}'}), use_container_width=True)
+            
+            # Find the bin for the current prediction
+            current_prob = live_prob
+            current_bin = pd.cut([current_prob], bins=bins, labels=labels, include_lowest=True)[0]
+            if current_bin is not None:
+                win_rate_for_bin = bin_win_rate[current_bin]
+                st.info(
+                    f"📊 **Current prediction ({current_prob:.1%})** falls into bin **{current_bin}**.\n\n"
+                    f"Historically, signals in this bin had a **win rate of {win_rate_for_bin:.1%}**."
+                )
+            else:
+                st.info(f"Current probability {current_prob:.1%} is outside the bins.")
+            
+            # Optional: reliability diagram
+            fig_cal = go.Figure()
+            fig_cal.add_trace(go.Bar(
+                x=cal_df['Probability Bin'],
+                y=cal_df['Historical Win Rate'],
+                name='Actual Win Rate'
+            ))
+            fig_cal.update_layout(
+                title='Probability Calibration',
+                xaxis_title='Predicted Probability Bin',
+                yaxis_title='Actual Win Rate'
+            )
+            st.plotly_chart(fig_cal, use_container_width=True)
+
 else:
     with st.expander("📈 Backtest Performance (out‑of‑sample)"):
         st.info("Not enough test data to display backtest.")
