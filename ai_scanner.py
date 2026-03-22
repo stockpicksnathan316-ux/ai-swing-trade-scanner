@@ -382,68 +382,40 @@ if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.droplevel(1)
 df = safe_add_ta_features(df)
 
-# Get full macro + sector data (includes SPY, sector ETFs, VIX, TNX, CL)
+# --- Get full macro + sector data ---
 macro_sector_df = get_macro_sector_data_cached(period)
 
-# Fetch fundamentals and sector mapping
-fundamentals = get_fundamentals(ticker)
-ticker_sector = TICKERS.get(ticker, 'Unknown')
-sector_etf = sector_to_etf.get(ticker_sector, None)
+# ------------------------------------------------------------------
+# Branch based on alpha (hybrid weight)
+# ------------------------------------------------------------------
+if alpha == 0:
+    # --- OLD PER‑STOCK SCANNER (technical indicators + basic macro only) ---
+    # Do NOT call add_enhanced_features. Use only TA + basic macro.
+    # (df already has TA features from earlier; we just join macro data)
+    # Use only basic macro data (VIX, TNX, CL) for the old scanner
+    basic_macro_df = macro_sector_df[['VIX', 'TNX', 'CL']]
+    df = df.join(basic_macro_df, how='left').ffill().bfill()
 
-# Add enhanced features (relative strength, VIX changes, fundamentals, etc.)
-df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
+    df['future_close'] = df['Close'].shift(-5)
+    df['target'] = (df['future_close'] > df['Close']).astype(int)
 
-# Create target
-df['future_close'] = df['Close'].shift(-5)
-df['target'] = (df['future_close'] > df['Close']).astype(int)
+    df_clean = df.dropna(subset=['target']).copy()
+    feature_columns = [col for col in df_clean.columns if col not in
+                       ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
 
-# Prepare features and target, drop NaN
-df_clean = df.dropna(subset=['target']).copy()
-feature_columns = [col for col in df_clean.columns if col not in 
-                   ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+    X = df_clean[feature_columns]
+    y = df_clean['target']
 
-X = df_clean[feature_columns]
-y = df_clean['target']
+    split_idx = int(len(df_clean) * 0.8)
+    X_train = X.iloc[:split_idx]
+    y_train = y.iloc[:split_idx]
+    X_test = X.iloc[split_idx:]
+    y_test = y.iloc[split_idx:]
 
-# Split into train/test
-split_idx = int(len(df_clean) * 0.8)
-X_train = X.iloc[:split_idx]
-y_train = y.iloc[:split_idx]
-X_test = X.iloc[split_idx:]
-y_test = y.iloc[split_idx:]
+    df_train = df_clean.iloc[:split_idx].copy()
+    df_test = df_clean.iloc[split_idx:].copy()
 
-df_train = df_clean.iloc[:split_idx].copy()
-df_test = df_clean.iloc[split_idx:].copy()
-
-# --- Use pooled model if available ---
-if pooled_model is not None and pooled_feature_cols is not None:
-    # 1. Pooled model predictions
-    X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
-    pooled_test_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
-    latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
-    pooled_live_prob = pooled_model.predict_proba(latest_features)[0][1]
-
-    # 2. Stock‑specific model (simple XGBoost)
-    stock_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
-    stock_model.fit(X_train, y_train)
-    stock_test_proba = stock_model.predict_proba(X_test)[:, 1]
-    latest_stock = df_clean[feature_columns].fillna(0).iloc[[-1]]
-    stock_live_prob = stock_model.predict_proba(latest_stock)[0][1]
-
-    # 3. Hybrid combination (adjust α as needed)
-    y_test_pred_proba = alpha * pooled_test_proba + (1 - alpha) * stock_test_proba
-    live_prob = alpha * pooled_live_prob + (1 - alpha) * stock_live_prob
-
-    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
-    acc = accuracy_score(y_test, y_test_pred_class)
-    prec = precision_score(y_test, y_test_pred_class, zero_division=0)
-
-    xgb_best = pooled_model.named_estimators_['xgb']   # still use pooled model for feature importance
-    st.write("🎯 **Using hybrid model (70% pooled + 30% stock‑specific)**")
-
-else:
-    # --- Fallback: original per‑stock training ---
-    # XGBoost tuning
+    # --- Train ensemble (old style) ---
     xgb_param_grid = {
         'n_estimators': [50, 100, 200],
         'max_depth': [2, 3, 4],
@@ -471,20 +443,125 @@ else:
     ensemble_model.fit(X_train, y_train)
 
     y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
-    y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+    threshold = 0.6
+    y_test_pred_class = (y_test_pred_proba > threshold).astype(int)
     acc = accuracy_score(y_test, y_test_pred_class)
     prec = precision_score(y_test, y_test_pred_class, zero_division=0)
 
     latest_row = df_clean[feature_columns].fillna(0).iloc[[-1]]
     live_prob = ensemble_model.predict_proba(latest_row)[0][1]
 
-    st.write("🎯 **Ensemble model trained with XGBoost, Random Forest, and LightGBM**")
+    st.write("🎯 **Using old per‑stock scanner (no enhanced features)**")
 
-# Determine which feature list to use for importance
-if pooled_model is not None and pooled_feature_cols is not None:
-    importance_features = pooled_feature_cols
-else:
+    # For feature importance later, use feature_columns
     importance_features = feature_columns
+
+elif alpha == 1:
+    # --- PURE POOLED MODEL (macro‑aware, with enhanced features) ---
+    # Add enhanced features (relative strength, VIX changes, fundamentals, etc.)
+    fundamentals = get_fundamentals(ticker)
+    ticker_sector = TICKERS.get(ticker, 'Unknown')
+    sector_etf = sector_to_etf.get(ticker_sector, None)
+    df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
+
+    df['future_close'] = df['Close'].shift(-5)
+    df['target'] = (df['future_close'] > df['Close']).astype(int)
+
+    df_clean = df.dropna(subset=['target']).copy()
+    # Feature columns for the pooled model are exactly the pooled_feature_cols
+    # But we need to ensure they exist; missing ones will be filled with 0 later.
+    feature_columns = [col for col in df_clean.columns if col not in
+                       ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+
+    X = df_clean[feature_columns]
+    y = df_clean['target']
+
+    split_idx = int(len(df_clean) * 0.8)
+    X_train = X.iloc[:split_idx]
+    y_train = y.iloc[:split_idx]
+    X_test = X.iloc[split_idx:]
+    y_test = y.iloc[split_idx:]
+
+    df_train = df_clean.iloc[:split_idx].copy()
+    df_test = df_clean.iloc[split_idx:].copy()
+
+    # Use pooled model for predictions
+    if pooled_model is not None and pooled_feature_cols is not None:
+        X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
+        y_test_pred_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+        y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+        acc = accuracy_score(y_test, y_test_pred_class)
+        prec = precision_score(y_test, y_test_pred_class, zero_division=0)
+
+        latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+        live_prob = pooled_model.predict_proba(latest_features)[0][1]
+
+        xgb_best = pooled_model.named_estimators_['xgb']
+        st.write("🎯 **Using pure pooled model (macro‑aware)**")
+    else:
+        st.error("Pooled model not loaded – cannot use alpha=1. Please retrain pooled model.")
+        st.stop()
+
+    importance_features = pooled_feature_cols
+
+else:
+    # --- HYBRID MODEL (0 < alpha < 1) ---
+    # Add enhanced features
+    fundamentals = get_fundamentals(ticker)
+    ticker_sector = TICKERS.get(ticker, 'Unknown')
+    sector_etf = sector_to_etf.get(ticker_sector, None)
+    df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
+
+    df['future_close'] = df['Close'].shift(-5)
+    df['target'] = (df['future_close'] > df['Close']).astype(int)
+
+    df_clean = df.dropna(subset=['target']).copy()
+    feature_columns = [col for col in df_clean.columns if col not in
+                       ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+
+    X = df_clean[feature_columns]
+    y = df_clean['target']
+
+    split_idx = int(len(df_clean) * 0.8)
+    X_train = X.iloc[:split_idx]
+    y_train = y.iloc[:split_idx]
+    X_test = X.iloc[split_idx:]
+    y_test = y.iloc[split_idx:]
+
+    df_train = df_clean.iloc[:split_idx].copy()
+    df_test = df_clean.iloc[split_idx:].copy()
+
+    if pooled_model is not None and pooled_feature_cols is not None:
+        # 1. Pooled model predictions
+        X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
+        pooled_test_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+        latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+        pooled_live_prob = pooled_model.predict_proba(latest_features)[0][1]
+
+        # 2. Stock‑specific model (simple XGBoost)
+        stock_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+        stock_model.fit(X_train, y_train)
+        stock_test_proba = stock_model.predict_proba(X_test)[:, 1]
+        latest_stock = df_clean[feature_columns].fillna(0).iloc[[-1]]
+        stock_live_prob = stock_model.predict_proba(latest_stock)[0][1]
+
+        # 3. Hybrid combination
+        y_test_pred_proba = alpha * pooled_test_proba + (1 - alpha) * stock_test_proba
+        live_prob = alpha * pooled_live_prob + (1 - alpha) * stock_live_prob
+
+        y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+        acc = accuracy_score(y_test, y_test_pred_class)
+        prec = precision_score(y_test, y_test_pred_class, zero_division=0)
+
+        xgb_best = pooled_model.named_estimators_['xgb']   # for feature importance
+        st.write(f"🎯 **Using hybrid model ({alpha:.0%} pooled + {1-alpha:.0%} stock‑specific)**")
+    else:
+        st.error("Pooled model not loaded – cannot use hybrid mode. Please retrain pooled model.")
+        st.stop()
+
+    importance_features = pooled_feature_cols
+
+# --- Continue with the rest of the page (candlestick chart, metrics, backtest, etc.) ---
 
 # Candlestick chart
 fig = go.Figure()
@@ -665,24 +742,14 @@ def scan_tickers_fallback(tickers, macro_sector_df):
 
             df_t = safe_add_ta_features(df_t)
 
-            # Get sector and fundamentals
-            fundamentals = get_fundamentals(ticker)
-            ticker_sector = TICKERS.get(ticker, 'Unknown')
-            sector_etf = sector_to_etf.get(ticker_sector, None)
+            # --- Branch based on alpha ---
+            
 
-            # Add enhanced features
-            df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df, sector_etf, fundamentals)
-
-            # If pooled model exists, use it
-            if pooled_model is not None and pooled_feature_cols is not None:
-                # Ensure all required features are present
-                for col in pooled_feature_cols:
-                    if col not in df_t.columns:
-                        df_t[col] = 0
-                latest = df_t[pooled_feature_cols].fillna(0).iloc[[-1]]
-                prob = pooled_model.predict_proba(latest)[0][1]
-            else:
-                # Fallback to per‑stock training
+            if alpha < 0.01:          # treat values less than 0.01 as zero
+                
+                # --- OLD PER‑STOCK SCANNER (no enhanced features) ---
+                # Join macro data (basic)
+                df_t = df_t.join(macro_sector_df, how='left').ffill().bfill()
                 feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
                 split = int(len(df_t) * 0.8)
                 train = df_t.iloc[:split]
@@ -702,6 +769,45 @@ def scan_tickers_fallback(tickers, macro_sector_df):
 
                 latest = df_t[feature_cols].fillna(0).iloc[[-1]]
                 prob = ensemble_t.predict_proba(latest)[0][1]
+
+            else:
+
+                # --- USE FAST POOLED MODEL (alpha > 0) ---
+                # Add enhanced features
+                fundamentals = get_fundamentals(ticker)
+                ticker_sector = TICKERS.get(ticker, 'Unknown')
+                sector_etf = sector_to_etf.get(ticker_sector, None)
+                df_t = fe.add_enhanced_features(df_t, ticker, macro_sector_df, sector_etf, fundamentals)
+
+                # Use pooled model if available
+                if pooled_model is not None and pooled_feature_cols is not None:
+                    # Ensure all required features are present
+                    for col in pooled_feature_cols:
+                        if col not in df_t.columns:
+                            df_t[col] = 0
+                    latest = df_t[pooled_feature_cols].fillna(0).iloc[[-1]]
+                    prob = pooled_model.predict_proba(latest)[0][1]
+                else:
+                    # Fallback: simple per‑stock model (shouldn't happen in production)
+                    feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
+                    split = int(len(df_t) * 0.8)
+                    train = df_t.iloc[:split]
+                    X_train = train[feature_cols].fillna(0)
+                    y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
+
+                    xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+                    rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
+                    lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+
+                    xgb_t.fit(X_train, y_train)
+                    rf_t.fit(X_train, y_train)
+                    lgb_t.fit(X_train, y_train)
+
+                    ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
+                    ensemble_t.fit(X_train, y_train)
+
+                    latest = df_t[feature_cols].fillna(0).iloc[[-1]]
+                    prob = ensemble_t.predict_proba(latest)[0][1]
 
             results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": f"{prob:.1%}", "Prob": prob})
         except Exception as e:
