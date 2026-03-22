@@ -727,7 +727,7 @@ else:
 
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
-@st.cache_data(ttl=21600)
+
 def scan_tickers_fallback(tickers, macro_sector_df):
     results = []
     for ticker in tickers:
@@ -749,7 +749,8 @@ def scan_tickers_fallback(tickers, macro_sector_df):
                 
                 # --- OLD PER‑STOCK SCANNER (no enhanced features) ---
                 # Join macro data (basic)
-                df_t = df_t.join(macro_sector_df, how='left').ffill().bfill()
+                basic_macro = macro_sector_df[['VIX', 'TNX', 'CL']]
+                df_t = df_t.join(basic_macro, how='left').ffill().bfill()
                 feature_cols = [c for c in df_t.columns if c not in ['Open','High','Low','Close','Volume']]
                 split = int(len(df_t) * 0.8)
                 train = df_t.iloc[:split]
