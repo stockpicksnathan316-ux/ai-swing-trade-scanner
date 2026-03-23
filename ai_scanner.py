@@ -369,347 +369,386 @@ if "checkout_url" in st.session_state:
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
 period = st.selectbox("Period", ["6mo", "1y", "2y"], index=1, key="main_period")
 
+# --- Single‑ticker scan button ---
+scan_single = st.button("🔍 Run Analysis")
+
+# Initialize session state for results
+if 'single_ticker_results' not in st.session_state:
+    st.session_state.single_ticker_results = None
+
 from streamlit_autorefresh import st_autorefresh
 st.sidebar.checkbox("Auto-refresh every 5 min", key="auto_refresh")
 if st.session_state.auto_refresh:
     st_autorefresh(interval=300000, key="auto_refresh_timer")
 
-df = yf.download(ticker, period=period, progress=False)
-if df.empty:
-    st.error(f"❌ No data found for {ticker} for period {period}. Please try another ticker or period.")
-    st.stop()
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.droplevel(1)
-df = safe_add_ta_features(df)
+# --- Only run the heavy analysis when the button is clicked ---
+if scan_single:
+    # Check scan limit
+    is_pro = st.session_state.paid_user
+    if not is_pro:
+        scans_used = get_user_scans_used(st.session_state.user_email)
+        if scans_used >= 5:
+            st.error("🔒 You've used all 5 free scans. Please upgrade to Pro for unlimited access!")
+            st.stop()
 
-# --- Get full macro + sector data ---
-macro_sector_df = get_macro_sector_data_cached(period)
+    # ------------------- ANALYSIS BEGINS -------------------
+    df = yf.download(ticker, period=period, progress=False)
+    if df.empty:
+        st.error(f"❌ No data found for {ticker} for period {period}. Please try another ticker or period.")
+        st.stop()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+    df = safe_add_ta_features(df)
 
-# ------------------------------------------------------------------
-# Branch based on alpha (hybrid weight)
-# ------------------------------------------------------------------
-if alpha == 0:
-    # --- OLD PER‑STOCK SCANNER (technical indicators + basic macro only) ---
-    # Do NOT call add_enhanced_features. Use only TA + basic macro.
-    # (df already has TA features from earlier; we just join macro data)
-    # Use only basic macro data (VIX, TNX, CL) for the old scanner
-    basic_macro_df = macro_sector_df[['VIX', 'TNX', 'CL']]
-    df = df.join(basic_macro_df, how='left').ffill().bfill()
+    # --- Get full macro + sector data ---
+    macro_sector_df = get_macro_sector_data_cached(period)
 
-    df['future_close'] = df['Close'].shift(-5)
-    df['target'] = (df['future_close'] > df['Close']).astype(int)
+    # ------------------------------------------------------------------
+    # Branch based on alpha (hybrid weight)
+    # ------------------------------------------------------------------
+    if alpha == 0:
+        # --- OLD PER‑STOCK SCANNER (technical indicators + basic macro only) ---
+        # Use only basic macro data (VIX, TNX, CL)
+        basic_macro_df = macro_sector_df[['VIX', 'TNX', 'CL']]
+        df = df.join(basic_macro_df, how='left').ffill().bfill()
 
-    df_clean = df.dropna(subset=['target']).copy()
-    feature_columns = [col for col in df_clean.columns if col not in
-                       ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+        df['future_close'] = df['Close'].shift(-5)
+        df['target'] = (df['future_close'] > df['Close']).astype(int)
 
-    X = df_clean[feature_columns]
-    y = df_clean['target']
+        df_clean = df.dropna(subset=['target']).copy()
+        feature_columns = [col for col in df_clean.columns if col not in
+                           ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
 
-    split_idx = int(len(df_clean) * 0.8)
-    X_train = X.iloc[:split_idx]
-    y_train = y.iloc[:split_idx]
-    X_test = X.iloc[split_idx:]
-    y_test = y.iloc[split_idx:]
+        X = df_clean[feature_columns]
+        y = df_clean['target']
 
-    df_train = df_clean.iloc[:split_idx].copy()
-    df_test = df_clean.iloc[split_idx:].copy()
+        split_idx = int(len(df_clean) * 0.8)
+        X_train = X.iloc[:split_idx]
+        y_train = y.iloc[:split_idx]
+        X_test = X.iloc[split_idx:]
+        y_test = y.iloc[split_idx:]
 
-    # --- Train ensemble (old style) ---
-    xgb_param_grid = {
-        'n_estimators': [50, 100, 200],
-        'max_depth': [2, 3, 4],
-        'learning_rate': [0.01, 0.05, 0.1],
-        'scale_pos_weight': [1, 1.5, 2, 3]
+        df_train = df_clean.iloc[:split_idx].copy()
+        df_test = df_clean.iloc[split_idx:].copy()
+
+        # --- Train ensemble (old style) ---
+        xgb_param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [2, 3, 4],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'scale_pos_weight': [1, 1.5, 2, 3]
+        }
+        xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
+        xgb_grid = GridSearchCV(estimator=xgb_model, param_grid=xgb_param_grid,
+                                cv=3, scoring='accuracy', verbose=0, n_jobs=-1)
+        xgb_grid.fit(X_train, y_train)
+        xgb_best = xgb_grid.best_estimator_
+        st.write(f"✅ Best XGBoost params: {xgb_grid.best_params_}")
+        st.write(f"✅ XGBoost CV accuracy: {xgb_grid.best_score_:.2%}")
+
+        rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
+        rf_model.fit(X_train, y_train)
+
+        lgb_model = lgb.LGBMClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, random_state=42, verbose=-1)
+        lgb_model.fit(X_train, y_train)
+
+        ensemble_model = VotingClassifier(
+            estimators=[('xgb', xgb_best), ('rf', rf_model), ('lgb', lgb_model)],
+            voting='soft'
+        )
+        ensemble_model.fit(X_train, y_train)
+
+        y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
+        threshold = 0.6
+        y_test_pred_class = (y_test_pred_proba > threshold).astype(int)
+        acc = accuracy_score(y_test, y_test_pred_class)
+        prec = precision_score(y_test, y_test_pred_class, zero_division=0)
+
+        latest_row = df_clean[feature_columns].fillna(0).iloc[[-1]]
+        live_prob = ensemble_model.predict_proba(latest_row)[0][1]
+
+        st.write("🎯 **Using old per‑stock scanner (no enhanced features)**")
+
+        # For feature importance later, use feature_columns
+        importance_features = feature_columns
+
+    elif alpha == 1:
+        # --- PURE POOLED MODEL (macro‑aware, with enhanced features) ---
+        fundamentals = get_fundamentals(ticker)
+        ticker_sector = TICKERS.get(ticker, 'Unknown')
+        sector_etf = sector_to_etf.get(ticker_sector, None)
+        df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
+
+        df['future_close'] = df['Close'].shift(-5)
+        df['target'] = (df['future_close'] > df['Close']).astype(int)
+
+        df_clean = df.dropna(subset=['target']).copy()
+        feature_columns = [col for col in df_clean.columns if col not in
+                           ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+
+        X = df_clean[feature_columns]
+        y = df_clean['target']
+
+        split_idx = int(len(df_clean) * 0.8)
+        X_train = X.iloc[:split_idx]
+        y_train = y.iloc[:split_idx]
+        X_test = X.iloc[split_idx:]
+        y_test = y.iloc[split_idx:]
+
+        df_train = df_clean.iloc[:split_idx].copy()
+        df_test = df_clean.iloc[split_idx:].copy()
+
+        if pooled_model is not None and pooled_feature_cols is not None:
+            X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
+            y_test_pred_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+            y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+            acc = accuracy_score(y_test, y_test_pred_class)
+            prec = precision_score(y_test, y_test_pred_class, zero_division=0)
+
+            latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+            live_prob = pooled_model.predict_proba(latest_features)[0][1]
+
+            xgb_best = pooled_model.named_estimators_['xgb']
+            st.write("🎯 **Using pure pooled model (macro‑aware)**")
+        else:
+            st.error("Pooled model not loaded – cannot use alpha=1. Please retrain pooled model.")
+            st.stop()
+
+        importance_features = pooled_feature_cols
+
+    else:
+        # --- HYBRID MODEL (0 < alpha < 1) ---
+        fundamentals = get_fundamentals(ticker)
+        ticker_sector = TICKERS.get(ticker, 'Unknown')
+        sector_etf = sector_to_etf.get(ticker_sector, None)
+        df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
+
+        df['future_close'] = df['Close'].shift(-5)
+        df['target'] = (df['future_close'] > df['Close']).astype(int)
+
+        df_clean = df.dropna(subset=['target']).copy()
+        feature_columns = [col for col in df_clean.columns if col not in
+                           ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+
+        X = df_clean[feature_columns]
+        y = df_clean['target']
+
+        split_idx = int(len(df_clean) * 0.8)
+        X_train = X.iloc[:split_idx]
+        y_train = y.iloc[:split_idx]
+        X_test = X.iloc[split_idx:]
+        y_test = y.iloc[split_idx:]
+
+        df_train = df_clean.iloc[:split_idx].copy()
+        df_test = df_clean.iloc[split_idx:].copy()
+
+        if pooled_model is not None and pooled_feature_cols is not None:
+            # 1. Pooled model predictions
+            X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
+            pooled_test_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
+            latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+            pooled_live_prob = pooled_model.predict_proba(latest_features)[0][1]
+
+            # 2. Stock‑specific model (simple XGBoost)
+            stock_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+            stock_model.fit(X_train, y_train)
+            stock_test_proba = stock_model.predict_proba(X_test)[:, 1]
+            latest_stock = df_clean[feature_columns].fillna(0).iloc[[-1]]
+            stock_live_prob = stock_model.predict_proba(latest_stock)[0][1]
+
+            # 3. Hybrid combination
+            y_test_pred_proba = alpha * pooled_test_proba + (1 - alpha) * stock_test_proba
+            live_prob = alpha * pooled_live_prob + (1 - alpha) * stock_live_prob
+
+            y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
+            acc = accuracy_score(y_test, y_test_pred_class)
+            prec = precision_score(y_test, y_test_pred_class, zero_division=0)
+
+            xgb_best = pooled_model.named_estimators_['xgb']   # for feature importance
+            st.write(f"🎯 **Using hybrid model ({alpha:.0%} pooled + {1-alpha:.0%} stock‑specific)**")
+        else:
+            st.error("Pooled model not loaded – cannot use hybrid mode. Please retrain pooled model.")
+            st.stop()
+
+        importance_features = pooled_feature_cols
+
+    # --- Store all results in session state ---
+    st.session_state.single_ticker_results = {
+        'df': df,
+        'df_test': df_test,
+        'acc': acc,
+        'prec': prec,
+        'live_prob': live_prob,
+        'y_test_pred_proba': y_test_pred_proba,
+        'y_test_pred_class': y_test_pred_class,
+        'y_test': y_test,
+        'xgb_best': xgb_best,
+        'importance_features': importance_features,
+        'df_train': df_train,
+        'feature_columns': feature_columns,
+        'X_test': X_test,               # needed for the backtest expander (if len(X_test) > 0)
     }
-    xgb_model = xgb.XGBClassifier(random_state=42, eval_metric='logloss')
-    xgb_grid = GridSearchCV(estimator=xgb_model, param_grid=xgb_param_grid,
-                            cv=3, scoring='accuracy', verbose=0, n_jobs=-1)
-    xgb_grid.fit(X_train, y_train)
-    xgb_best = xgb_grid.best_estimator_
-    st.write(f"✅ Best XGBoost params: {xgb_grid.best_params_}")
-    st.write(f"✅ XGBoost CV accuracy: {xgb_grid.best_score_:.2%}")
 
-    rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
-    rf_model.fit(X_train, y_train)
+    # Increment scan count if free user
+    if not is_pro:
+        increment_user_scans(st.session_state.user_email)
 
-    lgb_model = lgb.LGBMClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, random_state=42, verbose=-1)
-    lgb_model.fit(X_train, y_train)
+# ------------------------------------------------------------------
+# Display results from session state (if any)
+# ------------------------------------------------------------------
+if st.session_state.single_ticker_results is not None:
+    res = st.session_state.single_ticker_results
 
-    ensemble_model = VotingClassifier(
-        estimators=[('xgb', xgb_best), ('rf', rf_model), ('lgb', lgb_model)],
-        voting='soft'
-    )
-    ensemble_model.fit(X_train, y_train)
+    # --- Candlestick chart ---
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=res['df'].index,
+        open=res['df']['Open'],
+        high=res['df']['High'],
+        low=res['df']['Low'],
+        close=res['df']['Close'],
+        name='Price'
+    ))
 
-    y_test_pred_proba = ensemble_model.predict_proba(X_test)[:, 1]
-    threshold = 0.6
-    y_test_pred_class = (y_test_pred_proba > threshold).astype(int)
-    acc = accuracy_score(y_test, y_test_pred_class)
-    prec = precision_score(y_test, y_test_pred_class, zero_division=0)
-
-    latest_row = df_clean[feature_columns].fillna(0).iloc[[-1]]
-    live_prob = ensemble_model.predict_proba(latest_row)[0][1]
-
-    st.write("🎯 **Using old per‑stock scanner (no enhanced features)**")
-
-    # For feature importance later, use feature_columns
-    importance_features = feature_columns
-
-elif alpha == 1:
-    # --- PURE POOLED MODEL (macro‑aware, with enhanced features) ---
-    # Add enhanced features (relative strength, VIX changes, fundamentals, etc.)
-    fundamentals = get_fundamentals(ticker)
-    ticker_sector = TICKERS.get(ticker, 'Unknown')
-    sector_etf = sector_to_etf.get(ticker_sector, None)
-    df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
-
-    df['future_close'] = df['Close'].shift(-5)
-    df['target'] = (df['future_close'] > df['Close']).astype(int)
-
-    df_clean = df.dropna(subset=['target']).copy()
-    # Feature columns for the pooled model are exactly the pooled_feature_cols
-    # But we need to ensure they exist; missing ones will be filled with 0 later.
-    feature_columns = [col for col in df_clean.columns if col not in
-                       ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
-
-    X = df_clean[feature_columns]
-    y = df_clean['target']
-
-    split_idx = int(len(df_clean) * 0.8)
-    X_train = X.iloc[:split_idx]
-    y_train = y.iloc[:split_idx]
-    X_test = X.iloc[split_idx:]
-    y_test = y.iloc[split_idx:]
-
-    df_train = df_clean.iloc[:split_idx].copy()
-    df_test = df_clean.iloc[split_idx:].copy()
-
-    # Use pooled model for predictions
-    if pooled_model is not None and pooled_feature_cols is not None:
-        X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
-        y_test_pred_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
-        y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
-        acc = accuracy_score(y_test, y_test_pred_class)
-        prec = precision_score(y_test, y_test_pred_class, zero_division=0)
-
-        latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
-        live_prob = pooled_model.predict_proba(latest_features)[0][1]
-
-        xgb_best = pooled_model.named_estimators_['xgb']
-        st.write("🎯 **Using pure pooled model (macro‑aware)**")
-    else:
-        st.error("Pooled model not loaded – cannot use alpha=1. Please retrain pooled model.")
-        st.stop()
-
-    importance_features = pooled_feature_cols
-
-else:
-    # --- HYBRID MODEL (0 < alpha < 1) ---
-    # Add enhanced features
-    fundamentals = get_fundamentals(ticker)
-    ticker_sector = TICKERS.get(ticker, 'Unknown')
-    sector_etf = sector_to_etf.get(ticker_sector, None)
-    df = fe.add_enhanced_features(df, ticker, macro_sector_df, sector_etf, fundamentals)
-
-    df['future_close'] = df['Close'].shift(-5)
-    df['target'] = (df['future_close'] > df['Close']).astype(int)
-
-    df_clean = df.dropna(subset=['target']).copy()
-    feature_columns = [col for col in df_clean.columns if col not in
-                       ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
-
-    X = df_clean[feature_columns]
-    y = df_clean['target']
-
-    split_idx = int(len(df_clean) * 0.8)
-    X_train = X.iloc[:split_idx]
-    y_train = y.iloc[:split_idx]
-    X_test = X.iloc[split_idx:]
-    y_test = y.iloc[split_idx:]
-
-    df_train = df_clean.iloc[:split_idx].copy()
-    df_test = df_clean.iloc[split_idx:].copy()
-
-    if pooled_model is not None and pooled_feature_cols is not None:
-        # 1. Pooled model predictions
-        X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
-        pooled_test_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
-        latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
-        pooled_live_prob = pooled_model.predict_proba(latest_features)[0][1]
-
-        # 2. Stock‑specific model (simple XGBoost)
-        stock_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
-        stock_model.fit(X_train, y_train)
-        stock_test_proba = stock_model.predict_proba(X_test)[:, 1]
-        latest_stock = df_clean[feature_columns].fillna(0).iloc[[-1]]
-        stock_live_prob = stock_model.predict_proba(latest_stock)[0][1]
-
-        # 3. Hybrid combination
-        y_test_pred_proba = alpha * pooled_test_proba + (1 - alpha) * stock_test_proba
-        live_prob = alpha * pooled_live_prob + (1 - alpha) * stock_live_prob
-
-        y_test_pred_class = (y_test_pred_proba > 0.5).astype(int)
-        acc = accuracy_score(y_test, y_test_pred_class)
-        prec = precision_score(y_test, y_test_pred_class, zero_division=0)
-
-        xgb_best = pooled_model.named_estimators_['xgb']   # for feature importance
-        st.write(f"🎯 **Using hybrid model ({alpha:.0%} pooled + {1-alpha:.0%} stock‑specific)**")
-    else:
-        st.error("Pooled model not loaded – cannot use hybrid mode. Please retrain pooled model.")
-        st.stop()
-
-    importance_features = pooled_feature_cols
-
-# --- Continue with the rest of the page (candlestick chart, metrics, backtest, etc.) ---
-
-# Candlestick chart
-fig = go.Figure()
-fig.add_trace(go.Candlestick(
-    x=df.index,
-    open=df['Open'],
-    high=df['High'],
-    low=df['Low'],
-    close=df['Close'],
-    name='Price'
-))
-
-if 'rsi' in df.columns:
-    buy_signals = df[df['rsi'] < 30]
-    if not buy_signals.empty:
-        fig.add_trace(go.Scatter(
-            x=buy_signals.index,
-            y=buy_signals['Close'] * 0.98,
-            mode='markers',
-            marker=dict(size=8, color='lime', symbol='triangle-up'),
-            name='RSI Buy Signal'
-        ))
-
-st.plotly_chart(fig, width='stretch')
-
-col1, col2, col3 = st.columns(3)
-col1.metric("🎯 Test Accuracy", f"{acc:.1%}")
-col2.metric("⚡ Test Precision", f"{prec:.1%}")
-col3.metric("📊 Training Days", len(df_train))
-
-col4, col5 = st.columns(2)
-col4.metric("🔮 Today's 5-Day UP Probability", f"{live_prob:.1%}")
-col5.metric("📅 Latest Data", str(df.index[-1].date()))
-
-# --- Backtest on test set (out-of-sample) ---
-if len(X_test) > 0:
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-    acc_test = accuracy_score(y_test, y_test_pred_class)
-    prec_test = precision_score(y_test, y_test_pred_class, zero_division=0)
-    rec_test = recall_score(y_test, y_test_pred_class, zero_division=0)
-    f1_test = f1_score(y_test, y_test_pred_class, zero_division=0)
-
-    # Store test predictions for plotting
-    df_test['pred_prob'] = y_test_pred_proba
-    df_test['pred_class'] = y_test_pred_class
-    df_test['actual'] = y_test.values
-
-    # --- Backtest expander ---
-    with st.expander("📈 Backtest Performance (out‑of‑sample)"):
-        st.metric("Test Accuracy", f"{acc_test:.1%}")
-        st.metric("Test Precision", f"{prec_test:.1%}")
-        st.metric("Test Recall", f"{rec_test:.1%}")
-        st.metric("Test F1 Score", f"{f1_test:.1%}")
-
-        # Simple equity curve: simulate trades based on predictions
-        df_test['return'] = df_test['Close'].pct_change().shift(-1)  # next day return
-        df_test['strategy_return'] = df_test['pred_class'] * df_test['return']
-        df_test['cumulative_market'] = (1 + df_test['return']).cumprod()
-        df_test['cumulative_strategy'] = (1 + df_test['strategy_return']).cumprod()
-
-        # Plot equity curves
-        import plotly.graph_objects as go
-        fig_back = go.Figure()
-        fig_back.add_trace(go.Scatter(x=df_test.index, y=df_test['cumulative_market'],
-                                       mode='lines', name='Buy & Hold'))
-        fig_back.add_trace(go.Scatter(x=df_test.index, y=df_test['cumulative_strategy'],
-                                       mode='lines', name='AI Strategy'))
-        fig_back.update_layout(title="Equity Curve (Test Period)", xaxis_title="Date", yaxis_title="Cumulative Return")
-        st.plotly_chart(fig_back, use_container_width=True)
-
-        # Win rate on trades
-        trades = df_test[df_test['pred_class'] == 1]
-        if len(trades) > 0:
-            win_rate = (trades['strategy_return'] > 0).mean()
-            st.metric("Win Rate (on trades)", f"{win_rate:.1%}")
-
-        # --- Probability Calibration (nested expander) ---
-        with st.expander("📊 Probability Calibration"):
-            # Define probability bins
-            bins = np.arange(0, 1.1, 0.1)   # 0-10%, 10-20%, ..., 90-100%
-            labels = [f"{int(b*100)}-{int((b+0.1)*100)}%" for b in bins[:-1]]
-            
-            # Assign each test prediction to a bin
-            df_test['prob_bin'] = pd.cut(df_test['pred_prob'], bins=bins, labels=labels, include_lowest=True)
-            
-            # Compute win rate per bin (win = next day return > 0)
-            bin_win_rate = df_test.groupby('prob_bin')['return'].apply(lambda x: (x > 0).mean()).fillna(0)
-            bin_count = df_test.groupby('prob_bin')['return'].count()
-            
-            # Create a calibration DataFrame
-            cal_df = pd.DataFrame({
-                'Probability Bin': bin_win_rate.index,
-                'Number of Trades': bin_count.values,
-                'Historical Win Rate': bin_win_rate.values
-            }).reset_index(drop=True)
-            
-            # Display the calibration table
-            st.dataframe(cal_df.style.format({'Historical Win Rate': '{:.1%}'}), use_container_width=True)
-            
-            # Find the bin for the current prediction
-            current_prob = live_prob
-            current_bin = pd.cut([current_prob], bins=bins, labels=labels, include_lowest=True)[0]
-            if current_bin is not None:
-                win_rate_for_bin = bin_win_rate[current_bin]
-                st.info(
-                    f"📊 **Current prediction ({current_prob:.1%})** falls into bin **{current_bin}**.\n\n"
-                    f"Historically, signals in this bin had a **win rate of {win_rate_for_bin:.1%}**."
-                )
-            else:
-                st.info(f"Current probability {current_prob:.1%} is outside the bins.")
-            
-            # Optional: reliability diagram
-            fig_cal = go.Figure()
-            fig_cal.add_trace(go.Bar(
-                x=cal_df['Probability Bin'],
-                y=cal_df['Historical Win Rate'],
-                name='Actual Win Rate'
+    if 'rsi' in res['df'].columns:
+        buy_signals = res['df'][res['df']['rsi'] < 30]
+        if not buy_signals.empty:
+            fig.add_trace(go.Scatter(
+                x=buy_signals.index,
+                y=buy_signals['Close'] * 0.98,
+                mode='markers',
+                marker=dict(size=8, color='lime', symbol='triangle-up'),
+                name='RSI Buy Signal'
             ))
-            fig_cal.update_layout(
-                title='Probability Calibration',
-                xaxis_title='Predicted Probability Bin',
-                yaxis_title='Actual Win Rate'
-            )
-            st.plotly_chart(fig_cal, use_container_width=True)
+
+    st.plotly_chart(fig, width='stretch')
+
+    # --- Metrics row ---
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🎯 Test Accuracy", f"{res['acc']:.1%}")
+    col2.metric("⚡ Test Precision", f"{res['prec']:.1%}")
+    col3.metric("📊 Training Days", len(res['df_train']))
+
+    col4, col5 = st.columns(2)
+    col4.metric("🔮 Today's 5-Day UP Probability", f"{res['live_prob']:.1%}")
+    col5.metric("📅 Latest Data", str(res['df'].index[-1].date()))
+
+    # --- Backtest on test set (out-of-sample) ---
+    if len(res['X_test']) > 0:
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        acc_test = accuracy_score(res['y_test'], res['y_test_pred_class'])
+        prec_test = precision_score(res['y_test'], res['y_test_pred_class'], zero_division=0)
+        rec_test = recall_score(res['y_test'], res['y_test_pred_class'], zero_division=0)
+        f1_test = f1_score(res['y_test'], res['y_test_pred_class'], zero_division=0)
+
+        # Store test predictions for plotting
+        res['df_test']['pred_prob'] = res['y_test_pred_proba']
+        res['df_test']['pred_class'] = res['y_test_pred_class']
+        res['df_test']['actual'] = res['y_test'].values
+
+        # --- Backtest expander ---
+        with st.expander("📈 Backtest Performance (out‑of‑sample)"):
+            st.metric("Test Accuracy", f"{acc_test:.1%}")
+            st.metric("Test Precision", f"{prec_test:.1%}")
+            st.metric("Test Recall", f"{rec_test:.1%}")
+            st.metric("Test F1 Score", f"{f1_test:.1%}")
+
+            # Simple equity curve: simulate trades based on predictions
+            df_test = res['df_test']
+            df_test['return'] = df_test['Close'].pct_change().shift(-1)  # next day return
+            df_test['strategy_return'] = df_test['pred_class'] * df_test['return']
+            df_test['cumulative_market'] = (1 + df_test['return']).cumprod()
+            df_test['cumulative_strategy'] = (1 + df_test['strategy_return']).cumprod()
+
+            # Plot equity curves
+            fig_back = go.Figure()
+            fig_back.add_trace(go.Scatter(x=df_test.index, y=df_test['cumulative_market'],
+                                           mode='lines', name='Buy & Hold'))
+            fig_back.add_trace(go.Scatter(x=df_test.index, y=df_test['cumulative_strategy'],
+                                           mode='lines', name='AI Strategy'))
+            fig_back.update_layout(title="Equity Curve (Test Period)", xaxis_title="Date", yaxis_title="Cumulative Return")
+            st.plotly_chart(fig_back, use_container_width=True)
+
+            # Win rate on trades
+            trades = df_test[df_test['pred_class'] == 1]
+            if len(trades) > 0:
+                win_rate = (trades['strategy_return'] > 0).mean()
+                st.metric("Win Rate (on trades)", f"{win_rate:.1%}")
+
+            # --- Probability Calibration (nested expander) ---
+            with st.expander("📊 Probability Calibration"):
+                # Define probability bins
+                bins = np.arange(0, 1.1, 0.1)   # 0-10%, 10-20%, ..., 90-100%
+                labels = [f"{int(b*100)}-{int((b+0.1)*100)}%" for b in bins[:-1]]
+
+                # Assign each test prediction to a bin
+                df_test['prob_bin'] = pd.cut(df_test['pred_prob'], bins=bins, labels=labels, include_lowest=True)
+
+                # Compute win rate per bin (win = next day return > 0)
+                bin_win_rate = df_test.groupby('prob_bin')['return'].apply(lambda x: (x > 0).mean()).fillna(0)
+                bin_count = df_test.groupby('prob_bin')['return'].count()
+
+                # Create a calibration DataFrame
+                cal_df = pd.DataFrame({
+                    'Probability Bin': bin_win_rate.index,
+                    'Number of Trades': bin_count.values,
+                    'Historical Win Rate': bin_win_rate.values
+                }).reset_index(drop=True)
+
+                # Display the calibration table
+                st.dataframe(cal_df.style.format({'Historical Win Rate': '{:.1%}'}), use_container_width=True)
+
+                # Find the bin for the current prediction
+                current_prob = res['live_prob']
+                current_bin = pd.cut([current_prob], bins=bins, labels=labels, include_lowest=True)[0]
+                if current_bin is not None:
+                    win_rate_for_bin = bin_win_rate[current_bin]
+                    st.info(
+                        f"📊 **Current prediction ({current_prob:.1%})** falls into bin **{current_bin}**.\n\n"
+                        f"Historically, signals in this bin had a **win rate of {win_rate_for_bin:.1%}**."
+                    )
+                else:
+                    st.info(f"Current probability {current_prob:.1%} is outside the bins.")
+
+                # Optional: reliability diagram
+                fig_cal = go.Figure()
+                fig_cal.add_trace(go.Bar(
+                    x=cal_df['Probability Bin'],
+                    y=cal_df['Historical Win Rate'],
+                    name='Actual Win Rate'
+                ))
+                fig_cal.update_layout(
+                    title='Probability Calibration',
+                    xaxis_title='Predicted Probability Bin',
+                    yaxis_title='Actual Win Rate'
+                )
+                st.plotly_chart(fig_cal, use_container_width=True)
+
+    else:
+        with st.expander("📈 Backtest Performance (out‑of‑sample)"):
+            st.info("Not enough test data to display backtest.")
+
+    # --- Feature importance (optional) ---
+    if st.checkbox("Show what XGBoost learned"):
+        importance = pd.DataFrame({
+            'feature': res['importance_features'],
+            'importance': res['xgb_best'].feature_importances_
+        }).sort_values('importance', ascending=False).head(10)
+
+        import plotly.express as px
+        fig = px.bar(importance,
+                     x='importance',
+                     y='feature',
+                     orientation='h',
+                     title='Top 10 Feature Importances',
+                     labels={'importance': 'Importance', 'feature': ''})
+        fig.update_layout(yaxis={'categoryorder':'total ascending'},
+                          height=400,
+                          margin=dict(l=150))
+        st.plotly_chart(fig, use_container_width=True)
 
 else:
-    with st.expander("📈 Backtest Performance (out‑of‑sample)"):
-        st.info("Not enough test data to display backtest.")
-
-# --- Feature importance (optional) ---
-if st.checkbox("Show what XGBoost learned"):
-    importance = pd.DataFrame({
-        'feature': importance_features,
-        'importance': xgb_best.feature_importances_
-    }).sort_values('importance', ascending=False).head(10)
-
-    # Use Plotly for a clean horizontal bar chart with full labels
-    import plotly.express as px
-    fig = px.bar(importance, 
-                 x='importance', 
-                 y='feature', 
-                 orientation='h',
-                 title='Top 10 Feature Importances',
-                 labels={'importance': 'Importance', 'feature': ''})
-    fig.update_layout(yaxis={'categoryorder':'total ascending'},
-                      height=400,
-                      margin=dict(l=150))  # Extra left margin for long names
-    st.plotly_chart(fig, use_container_width=True)
+    st.info("Click 'Run Analysis' to generate predictions and backtest.")
 
 
 # ------------------- MULTI‑TICKER SCREENER -------------------
@@ -727,8 +766,8 @@ else:
 
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
-
-def scan_tickers_fallback(tickers, macro_sector_df):
+@st.cache_data(ttl=21600)
+def scan_tickers_fallback(tickers, macro_sector_df, alpha):
     results = []
     for ticker in tickers:
         try:
@@ -827,14 +866,14 @@ if scan_button:
         else:
             with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
                 macro_sector_df = get_macro_sector_data_cached("1y")
-                results = scan_tickers_fallback(ticker_list, macro_sector_df)
+                results = scan_tickers_fallback(ticker_list, macro_sector_df, alpha)
                 increment_user_scans(user_email)
                 st.session_state.scanner_results = results
                 st.rerun()
     else:
         with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
             macro_sector_df = get_macro_sector_data_cached("1y")
-            results = scan_tickers_fallback(ticker_list, macro_sector_df)
+            results = scan_tickers_fallback(ticker_list, macro_sector_df, alpha)
             st.session_state.scanner_results = results
             st.rerun()
 
