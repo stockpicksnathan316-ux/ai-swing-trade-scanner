@@ -30,4 +30,5 @@ Blog Post*
 Excellent question!*
 For over 10 years*
 Formula.txt
-stripe-webhook/
+stripe-webhook/"stock_model_*.pkl" 
+"stock_features_*.pkl" 
