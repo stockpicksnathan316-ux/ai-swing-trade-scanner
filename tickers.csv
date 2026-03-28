@@ -29,6 +29,7 @@ DDOG,Technology
 MDB,Technology
 CRWD,Technology
 ZS,Technology
+FN,Technology
 TSLA,Consumer Cyclical
 AMZN,Consumer Cyclical
 HD,Consumer Cyclical
@@ -43,6 +44,7 @@ ROKU,Communication Services
 SPOT,Communication Services
 EA,Communication Services
 TTWO,Communication Services
+OMC,Communication Services
 JPM,Financial
 BAC,Financial
 WFC,Financial
@@ -72,6 +74,7 @@ ISRG,Healthcare
 BDX,Healthcare
 MDT,Healthcare
 SYK,Healthcare
+FOLD,Healthcare
 XOM,Energy
 CVX,Energy
 COP,Energy
@@ -102,6 +105,7 @@ CL,Consumer Defensive
 KMB,Consumer Defensive
 MDLZ,Consumer Defensive
 MO,Consumer Defensive
+UTI,Consumer Defensive
 NEE,Utilities
 DUK,Utilities
 SO,Utilities
@@ -112,6 +116,7 @@ SRE,Utilities
 PEG,Utilities
 ED,Utilities
 WEC,Utilities
+HTO,Utilities
 PLD,Real Estate
 AMT,Real Estate
 EQIX,Real Estate

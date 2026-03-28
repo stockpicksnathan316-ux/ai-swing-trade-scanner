@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import joblib
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.model_selection import train_test_split
 import xgboost as xgb
 import lightgbm as lgb
 from datetime import datetime, timedelta
@@ -16,6 +17,7 @@ END_DATE = datetime.now().strftime('%Y-%m-%d')
 TICKERS_CSV = 'tickers.csv'
 MODEL_SAVE_PATH = 'pooled_model.pkl'
 FEATURE_COLS_SAVE_PATH = 'pooled_feature_cols.pkl'
+CALIBRATION_MAP_PATH = 'calibration_map.pkl'
 
 # --- Load tickers ---
 tickers_df = pd.read_csv(TICKERS_CSV)
@@ -37,9 +39,26 @@ feature_cols = [c for c in data.columns if c not in exclude_cols]
 X = data[feature_cols].fillna(0)
 y = data['target']
 
+# --- Check for duplicate columns ---
+duplicates = X.columns[X.columns.duplicated()].tolist()
+if duplicates:
+    print(f"⚠️ Duplicate columns found: {duplicates}")
+    print(f"Keeping the first occurrence and dropping duplicates.")
+    X = X.loc[:, ~X.columns.duplicated()]
+    # Update feature_cols list after dropping duplicates
+    feature_cols = X.columns.tolist()
+else:
+    print("✅ No duplicate columns found.")
+
 print(f"Training on {X.shape[0]} rows with {len(feature_cols)} features.")
 
-# --- Train ensemble ---
+# --- Split into training and validation sets ---
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+print(f"Training set: {X_train.shape[0]} rows, Validation set: {X_val.shape[0]} rows")
+
+# --- Train ensemble on training set ---
 xgb_model = xgb.XGBClassifier(
     n_estimators=100,
     max_depth=4,
@@ -68,10 +87,32 @@ ensemble = VotingClassifier(
 )
 
 print("Training ensemble...")
-ensemble.fit(X, y)
+ensemble.fit(X_train, y_train)
 
-# --- Save model and feature columns ---
+# --- Generate calibration map using validation set ---
+print("Generating calibration map...")
+y_pred_proba_val = ensemble.predict_proba(X_val)[:, 1]
+
+bins = np.arange(0, 1.1, 0.1)  # 0-10%, 10-20%, ..., 90-100%
+bin_win_rates = []
+for i in range(len(bins)-1):
+    mask = (y_pred_proba_val >= bins[i]) & (y_pred_proba_val < bins[i+1])
+    if mask.sum() > 0:
+        win_rate = (y_val[mask] == 1).mean()
+    else:
+        win_rate = 0.5   # neutral fallback if bin empty
+    bin_win_rates.append(win_rate)
+
+calibration_map = {
+    'bin_edges': bins,
+    'win_rates': bin_win_rates
+}
+
+# --- Save model, feature columns, and calibration map ---
 joblib.dump(ensemble, MODEL_SAVE_PATH)
 joblib.dump(feature_cols, FEATURE_COLS_SAVE_PATH)
+joblib.dump(calibration_map, CALIBRATION_MAP_PATH)
+
 print(f"Model saved to {MODEL_SAVE_PATH}")
 print(f"Feature columns saved to {FEATURE_COLS_SAVE_PATH}")
+print(f"Calibration map saved to {CALIBRATION_MAP_PATH}")
