@@ -34,10 +34,12 @@ def safe_add_ta_features(df, min_rows=10):
 
 # --- Stock‑specific model caching ---
 def get_stock_model_cache_path(ticker):
-    """Return file paths for cached model and feature columns."""
     ticker_hash = hashlib.md5(ticker.encode()).hexdigest()
-    model_path = f"stock_model_{ticker_hash}.pkl"
-    features_path = f"stock_features_{ticker_hash}.pkl"
+    cache_dir = "tick_sniper_cache"
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+    model_path = os.path.join(cache_dir, f"stock_model_{ticker_hash}.pkl")
+    features_path = os.path.join(cache_dir, f"stock_features_{ticker_hash}.pkl")
     return model_path, features_path
 
 def is_model_fresh(ticker, max_age_hours=24):
