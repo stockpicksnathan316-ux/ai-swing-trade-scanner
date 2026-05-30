@@ -18,6 +18,48 @@ from datetime import datetime, timedelta
 from supabase import create_client
 from feature_engineering import get_fundamentals
 import hashlib
+import time
+
+MIN_TRADES_FOR_CALIBRATION = 10
+
+# ------------------- Calibration helper -------------------
+def calibrate_prob(prob, cal_map):
+    if cal_map is None:
+        return prob
+    bins = cal_map['bin_edges']
+    win_rates = cal_map['win_rates']
+    for i in range(len(bins)-1):
+        if bins[i] <= prob < bins[i+1]:
+            return win_rates[i]
+    if prob >= 1.0:
+        return win_rates[-1] if win_rates else prob
+    if prob < 0:
+        return win_rates[0] if win_rates else prob
+    return prob
+
+# ------------------- Profit target model loader -------------------
+def get_model_for_target(target_str):
+    mapping = {
+        "Any up": ("pooled_model_any_up.pkl", "calibration_map_any_up.pkl", "pooled_feature_cols_any_up.pkl"),
+        "2%":    ("pooled_model_2pct.pkl", "calibration_map_2pct.pkl", "pooled_feature_cols_2pct.pkl"),
+        "3%":    ("pooled_model_3pct.pkl", "calibration_map_3pct.pkl", "pooled_feature_cols_3pct.pkl"),
+        "5%":    ("pooled_model_5pct.pkl", "calibration_map_5pct.pkl", "pooled_feature_cols_5pct.pkl"),
+    }
+    model_file, cal_file, feat_file = mapping.get(target_str, mapping["Any up"])
+    
+    # Fallback to existing models if new ones don't exist yet
+    if not os.path.exists(model_file) and target_str != "Any up":
+        st.warning(f"Model for {target_str} not found. Falling back to 'Any up'.")
+        return get_model_for_target("Any up")
+    
+    if os.path.exists(model_file):
+        model = joblib.load(model_file)
+        cal_map = joblib.load(cal_file)
+        feat_cols = joblib.load(feat_file)
+        return model, cal_map, feat_cols
+    else:
+        # Use your original pooled model as ultimate fallback
+        return joblib.load('pooled_model.pkl'), joblib.load('calibration_map.pkl'), joblib.load('pooled_feature_cols.pkl')
 
 # ------------------- Helper: safe technical indicators -------------------
 def safe_add_ta_features(df, min_rows=10):
@@ -31,6 +73,13 @@ def safe_add_ta_features(df, min_rows=10):
     except Exception as e:
         st.warning(f"Technical indicator calculation failed: {str(e)}. Using raw price data only.")
         return df
+
+def is_above_long_term_ma(df, period=200):
+    """Return True if the latest close is above the period-day SMA."""
+    if len(df) < period:
+        return True   # Not enough data – allow trade (or you could return False)
+    sma = df['Close'].rolling(window=period).mean()
+    return df['Close'].iloc[-1] > sma.iloc[-1]
 
 # --- Stock‑specific model caching ---
 def get_stock_model_cache_path(ticker):
@@ -275,37 +324,6 @@ else:
 if 'feature_cols' not in locals():
     feature_cols = []
 
-# --- Load pooled model if available ---
-pooled_model = None
-pooled_feature_cols = None
-if os.path.exists('pooled_model.pkl') and os.path.exists('pooled_feature_cols.pkl'):
-    pooled_model = joblib.load('pooled_model.pkl')
-    pooled_feature_cols = joblib.load('pooled_feature_cols.pkl')
-    st.sidebar.success("✅ Loaded pooled model (trained on multiple stocks)")
-else:
-    st.sidebar.warning("Pooled model not found. Using per‑stock training (slower).")
-
-# --- Load calibration map for pooled model ---
-calibration_map = None
-if os.path.exists('calibration_map.pkl'):
-    calibration_map = joblib.load('calibration_map.pkl')
-    st.sidebar.success("✅ Loaded probability calibration map")
-else:
-    st.sidebar.warning("Calibration map not found. Using raw probabilities.")
-
-def calibrate_prob(prob, cal_map):
-    if cal_map is None:
-        return prob
-    bins = cal_map['bin_edges']
-    win_rates = cal_map['win_rates']
-    for i in range(len(bins)-1):
-        if bins[i] <= prob < bins[i+1]:
-            return win_rates[i]
-    if prob >= 1.0:
-        return win_rates[-1] if win_rates else prob
-    if prob < 0:
-        return win_rates[0] if win_rates else prob
-    return prob
 
 # ------------------- Page config -------------------
 st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
@@ -357,7 +375,7 @@ st.sidebar.write(f"Logged in as: **{st.session_state.user_email}**")
 if st.sidebar.button("Logout"):
     supabase.auth.sign_out()
     st.session_state.user_email = None
-    st.session_state.supabase_session = None  # Clear saved tokens
+    st.session_state.supabase_session = None
     st.rerun()
 
 # --- User Alert Dashboard (sidebar) ---
@@ -372,6 +390,77 @@ with st.sidebar.expander("🔔 My Alerts"):
                 st.rerun()
     else:
         st.write("No alerts set. Click 'Watch' on a stock analysis to add one.")
+
+# ------------------- NEW: Profit target selector (MUST be before model loading) -------------------
+profit_target = st.sidebar.selectbox(
+    "Profit target for prediction",
+    options=["Any up", "2%", "3%", "5%"],
+    index=0,
+    help="Model predicts probability of at least this gain in 5 days"
+)
+
+# ------------------- Load pooled model based on selected profit target -------------------
+pooled_model = None
+pooled_feature_cols = None
+calibration_map = None
+
+# Helper function (if not already defined above – it is, but we keep it here for clarity)
+def get_model_for_target(target_str):
+    mapping = {
+        "Any up": ("pooled_model_any_up.pkl", "calibration_map_any_up.pkl", "pooled_feature_cols_any_up.pkl"),
+        "2%":    ("pooled_model_2pct.pkl", "calibration_map_2pct.pkl", "pooled_feature_cols_2pct.pkl"),
+        "3%":    ("pooled_model_3pct.pkl", "calibration_map_3pct.pkl", "pooled_feature_cols_3pct.pkl"),
+        "5%":    ("pooled_model_5pct.pkl", "calibration_map_5pct.pkl", "pooled_feature_cols_5pct.pkl"),
+    }
+    model_file, cal_file, feat_file = mapping.get(target_str, mapping["Any up"])
+    if os.path.exists(model_file):
+        return joblib.load(model_file), joblib.load(cal_file), joblib.load(feat_file)
+    else:
+        st.warning(f"Model for {target_str} not found. Falling back to 'Any up'.")
+        # Fallback to original pooled model
+        if os.path.exists('pooled_model.pkl'):
+            return joblib.load('pooled_model.pkl'), joblib.load('calibration_map.pkl'), joblib.load('pooled_feature_cols.pkl')
+        else:
+            return None, None, None
+
+if profit_target != "Any up":
+    # Try to load target-specific model
+    pm, cm, pf = get_model_for_target(profit_target)
+    if pm is not None:
+        pooled_model, calibration_map, pooled_feature_cols = pm, cm, pf
+        st.sidebar.success(f"✅ Loaded {profit_target} pooled model")
+    else:
+        st.sidebar.error(f"Could not load model for {profit_target}. Please train it first.")
+        profit_target = "Any up"  # fallback for UI display
+        # Then load default model
+        if os.path.exists('pooled_model.pkl'):
+            pooled_model = joblib.load('pooled_model.pkl')
+            calibration_map = joblib.load('calibration_map.pkl')
+            pooled_feature_cols = joblib.load('pooled_feature_cols.pkl')
+            st.sidebar.success("✅ Loaded default pooled model (any up move)")
+        else:
+            pooled_model = None
+            st.sidebar.warning("Pooled model not found. Using per‑stock training (slower).")
+else:
+    # "Any up" selected – load original pooled model
+    if os.path.exists('pooled_model.pkl'):
+        pooled_model = joblib.load('pooled_model.pkl')
+        calibration_map = joblib.load('calibration_map.pkl')
+        pooled_feature_cols = joblib.load('pooled_feature_cols.pkl')
+        st.sidebar.success("✅ Loaded pooled model (any up move)")
+    else:
+        pooled_model = None
+        pooled_feature_cols = None
+        st.sidebar.warning("Pooled model not found. Using per‑stock training (slower).")
+
+# --- FIX: Determine xgb_best once (works for both VotingClassifier and single XGBoost) ---
+if pooled_model is not None:
+    if hasattr(pooled_model, 'named_estimators_'):
+        xgb_best_global = pooled_model.named_estimators_['xgb']   # VotingClassifier ensemble
+    else:
+        xgb_best_global = pooled_model                             # plain XGBClassifier
+else:
+    xgb_best_global = None
 
 
 # --- Hybrid model weight ---
@@ -394,6 +483,19 @@ class_threshold = st.sidebar.slider(
     step=0.05,
     help="Signals with probability ≥ this value are considered. Lower = more trades."
 )
+
+
+# --- NEW: Take profit & stop loss sliders ---
+st.sidebar.markdown("### 🎯 Exit rules (ATR‑based)")
+tp_atr_mult = st.sidebar.number_input(
+    "Take profit (× ATR)", min_value=0.5, max_value=5.0, value=2.0, step=0.5,
+    help="Exit when price rises by this multiple of ATR"
+)
+sl_atr_mult = st.sidebar.number_input(
+    "Stop loss (× ATR)", min_value=0.5, max_value=5.0, value=1.0, step=0.5,
+    help="Exit when price falls by this multiple of ATR"
+)
+
 st.sidebar.caption(f"Current threshold = {class_threshold:.2f}")
 
 st.title("🤖 AI Momentum Predictor")
@@ -527,10 +629,7 @@ if scan_single:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
 
-    # Debug: print raw data for AAPL
-    if ticker == 'AAPL':
-        print("\n--- Single‑ticker raw data (last 3 days) ---")
-        print(df[['Open','High','Low','Close','Volume']].tail(3))
+
 
     df = safe_add_ta_features(df)
 
@@ -546,9 +645,15 @@ if scan_single:
     # Branch based on alpha (hybrid weight)
     # ------------------------------------------------------------------
     if alpha == 0:
-        # --- OLD PER‑STOCK SCANNER (technical indicators + basic macro only) ---
-        # Use cached model
+        # --- OLD PER‑STOCK SCANNER ---
         model, feature_cols = get_stock_specific_model(ticker, df_basic)
+        latest_row = df_basic[feature_cols].fillna(0).iloc[[-1]]
+        live_prob = model.predict_proba(latest_row)[0][1]
+
+        # Trend filter
+        if not is_above_long_term_ma(df, period=200):
+            st.warning("⚠️ Stock is below its 200-day moving average. Long signals are filtered out.")
+            live_prob = 0.0
 
         # Prepare latest row for live prediction
         latest_row = df_basic[feature_cols].fillna(0).iloc[[-1]]
@@ -618,16 +723,17 @@ if scan_single:
 
             latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
 
-            # Debug: print features for AAPL
-            if ticker == 'AAPL':
-                print(f"\n--- Single‑ticker features for AAPL ---")
-                print(latest_features.head(10).T)
-                print("----------------------------------------\n")
 
             live_prob_raw = pooled_model.predict_proba(latest_features)[0][1]
             live_prob_cal = calibrate_prob(live_prob_raw, calibration_map)
 
-            xgb_best = pooled_model.named_estimators_['xgb']
+            # Trend filter
+            if not is_above_long_term_ma(df, period=200):
+                st.warning("⚠️ Stock is below its 200-day moving average. Long signals are filtered out.")
+                live_prob_raw = 0.0
+                live_prob_cal = 0.0
+
+            xgb_best = xgb_best_global
             st.write("🎯 **Using pure pooled model (macro‑aware)**")
         else:
             st.error("Pooled model not loaded – cannot use alpha=1. Please retrain pooled model.")
@@ -685,6 +791,12 @@ if scan_single:
         live_prob_raw = alpha * pooled_live_prob + (1 - alpha) * stock_live_prob
         live_prob_cal = calibrate_prob(live_prob_raw, calibration_map)
 
+        # Trend filter
+        if not is_above_long_term_ma(df, period=200):
+            st.warning("⚠️ Stock is below its 200-day moving average. Long signals are filtered out.")
+            live_prob_raw = 0.0
+            live_prob_cal = 0.0
+
         # Use y_test from enhanced (same dates)
         y_test = y_test_enhanced
         y_test_pred_class = (y_test_pred_proba > class_threshold).astype(int)
@@ -697,10 +809,10 @@ if scan_single:
         df_test['pred_class'] = y_test_pred_class
         df_test['actual'] = y_test.values
 
-        xgb_best = pooled_model.named_estimators_['xgb']
         importance_features = pooled_feature_cols
 
         st.write(f"🎯 **Using hybrid model ({alpha:.0%} pooled + {1-alpha:.0%} stock‑specific)**")
+        xgb_best = xgb_best_global
 
         # Set consistent variables for result dict
         df_train = df_clean_enhanced.iloc[:split_idx].copy()
@@ -763,6 +875,7 @@ if scan_single:
 
         # Compute historical win rate per bin (5‑day return > 0)
         bin_win_rate = df_test.groupby('prob_bin')['return_5d'].apply(lambda x: (x > 0).mean()).fillna(0)
+        bin_count = df_test.groupby('prob_bin')['return_5d'].count()   # <-- add this line
 
         # Current raw probability (depends on branch)
         if 'live_prob_raw' in res:
@@ -773,7 +886,12 @@ if scan_single:
         # Find which bin the current prediction falls into
         current_bin = pd.cut([current_prob], bins=bins, labels=labels, include_lowest=True)[0]
         if current_bin is not None:
-            calibrated = bin_win_rate[current_bin]
+            bin_trades = bin_count[current_bin]
+            if bin_trades >= MIN_TRADES_FOR_CALIBRATION:
+                calibrated = bin_win_rate[current_bin]
+            else:
+                calibrated = current_prob
+                st.warning(f"⚠️ Only {bin_trades} trades in bin {current_bin}. Using raw probability ({current_prob:.1%}) instead of calibrated win rate.")
         else:
             calibrated = None
 
@@ -829,7 +947,7 @@ if st.session_state.single_ticker_results is not None:
     col4, col5 = st.columns(2)
     if 'live_prob_raw' in res:
         # For alpha>0
-        col4.metric("🔮 Raw 5‑Day UP Probability", f"{res['live_prob_raw']:.1%}")
+        col4.metric(f"🔮 Prob. of ≥{profit_target} in 5d", f"{res['live_prob_raw']:.1%}")
         col5.metric("📊 Calibrated Win Rate", f"{res['live_prob_cal']:.1%}")
     else:
         # For alpha=0
@@ -910,77 +1028,135 @@ if st.session_state.single_ticker_results is not None:
             threshold = class_threshold
             st.write(f"Max predicted probability: {df_test['pred_prob'].max():.3f}")
 
-            # Generate signals: predicted probability > threshold
+            # --- NEW backtest with TP/SL ---
+            threshold = class_threshold
+            # Calculate ATR (14-day) for the test DataFrame
+            df_test['tr'] = np.maximum(
+                df_test['High'] - df_test['Low'],
+                np.maximum(
+                    abs(df_test['High'] - df_test['Close'].shift(1)),
+                    abs(df_test['Low'] - df_test['Close'].shift(1))
+                )
+            )
+            df_test['atr'] = df_test['tr'].rolling(14).mean()
+
             signals = df_test[df_test['pred_prob'] > threshold].copy()
             if len(signals) == 0:
                 st.info("No trades were taken during the test period.")
             else:
-                signals['entry_date'] = signals.index
-                # Function to compute 5‑day forward return for a given date
-                def get_future_return(row_idx, df):
-                    try:
-                        pos = df.index.get_loc(row_idx)
-                        if pos + 5 < len(df):
-                            future_idx = df.index[pos + 5]
-                            future_price = df.loc[future_idx, 'Close']
-                            current_price = df.loc[row_idx, 'Close']
-                            return (future_price - current_price) / current_price
-                        else:
-                            return np.nan
-                    except Exception:
-                        return np.nan
-
-                signals['return_5d'] = signals['entry_date'].apply(lambda x: get_future_return(x, df_test))
-                # Force numeric and drop rows where conversion fails (non‑numeric, NaNs)
-                signals['return_5d'] = pd.to_numeric(signals['return_5d'], errors='coerce')
-                signals = signals.dropna(subset=['return_5d']).copy()
-                signals['win'] = signals['return_5d'] > 0
-                signals['exit_date'] = signals['entry_date'] + pd.Timedelta(days=5*5/7)  # approximate 5 trading days
-
-                # --- Trade‑by‑trade table ---
-                trade_table = pd.DataFrame({
-                    'Entry Date': signals['entry_date'].dt.strftime('%Y-%m-%d'),
-                    'Exit Date': signals['exit_date'].dt.strftime('%Y-%m-%d'),
-                    'Predicted Probability': signals['pred_prob'].round(3),
-                    '5‑Day Return': signals['return_5d'].round(4),
-                    'Win/Loss': signals['win'].map({True: 'Win', False: 'Loss'})
-                })
-                st.subheader("📊 Trade-by-Trade Breakdown (5-Day Hold)")
-                st.dataframe(trade_table, use_container_width=True)
-
-                # Summary metrics
-                win_rate = signals['win'].mean()
-                avg_win = signals.loc[signals['win'], 'return_5d'].mean() if signals['win'].any() else 0
-                avg_loss = signals.loc[~signals['win'], 'return_5d'].mean() if (~signals['win']).any() else 0
-                profit_factor = (signals.loc[signals['win'], 'return_5d'].sum() / abs(signals.loc[~signals['win'], 'return_5d'].sum())) if (~signals['win']).any() and signals.loc[signals['win'], 'return_5d'].sum() > 0 else np.inf
-
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Win Rate", f"{win_rate:.1%}")
-                col2.metric("Avg Win", f"{avg_win:.2%}")
-                col2.metric("Avg Loss", f"{avg_loss:.2%}")
-                col3.metric("Profit Factor", f"{profit_factor:.2f}")
-
-                # --- Equity curve (simplified) ---
-                # Create a series of zeros with the same index as df_test
-                strategy_returns = pd.Series(0.0, index=df_test.index)
-                for _, row in signals.iterrows():
-                    entry = row['entry_date']
-                    ret = row['return_5d']
-                    pos = df_test.index.get_loc(entry)
-                    exit_pos = min(pos + 5, len(df_test)-1)
-                    exit_date = df_test.index[exit_pos]
-                    strategy_returns[exit_date] += ret
-
-                strategy_cumulative = (1 + strategy_returns).cumprod()
-                market_cumulative = (1 + df_test['return_5d'].fillna(0)).cumprod()
-
-                fig_back = go.Figure()
-                fig_back.add_trace(go.Scatter(x=df_test.index, y=market_cumulative,
-                                              mode='lines', name='Buy & Hold'))
-                fig_back.add_trace(go.Scatter(x=strategy_cumulative.index, y=strategy_cumulative,
-                                              mode='lines', name='AI Strategy (5‑day hold)'))
-                fig_back.update_layout(title="Equity Curve (Test Period)", xaxis_title="Date", yaxis_title="Cumulative Return")
-                st.plotly_chart(fig_back, use_container_width=True)
+                trade_list = []
+                for idx, row in signals.iterrows():
+                    entry_date = idx
+                    entry_price = row['Close']
+                    # Get ATR at entry (use previous day's ATR to avoid look-ahead)
+                    entry_pos = df_test.index.get_loc(entry_date)
+                    atr_entry = df_test['atr'].iloc[entry_pos] if not pd.isna(df_test['atr'].iloc[entry_pos]) else df_test['atr'].dropna().iloc[-1]
+                    tp_price = entry_price * (1 + tp_atr_mult * (atr_entry / entry_price))
+                    sl_price = entry_price * (1 - sl_atr_mult * (atr_entry / entry_price))
+        
+                    # Find the position of entry date in df_test
+                    entry_pos = df_test.index.get_loc(entry_date)
+                    exit_date = None
+                    exit_price = None
+                    exit_reason = None
+                    
+                    # Look at the next 5 trading days (or until we hit TP/SL)
+                    for offset in range(1, 6):
+                        if entry_pos + offset >= len(df_test):
+                            break
+                        day = df_test.iloc[entry_pos + offset]
+                        day_high = day['High']
+                        day_low = day['Low']
+                
+                        # Check stop loss first (more conservative)
+                        if day_low <= sl_price:
+                            exit_date = day.name
+                            exit_price = sl_price
+                            exit_reason = "Stop loss"
+                            break
+                        # Check take profit
+                        if day_high >= tp_price:
+                            exit_date = day.name
+                            exit_price = tp_price
+                            exit_reason = "Take profit"
+                            break
+            
+                    # If neither hit within 5 days, close at the 5th day's close
+                    if exit_date is None and entry_pos + 5 < len(df_test):
+                        exit_date = df_test.index[entry_pos + 5]
+                        exit_price = df_test.iloc[entry_pos + 5]['Close']
+                        exit_reason = "Hold 5 days"
+                    elif exit_date is None:
+                        # Not enough data to hold 5 days – skip this trade
+                        continue
+            
+                    ret = (exit_price - entry_price) / entry_price
+                    trade_list.append({
+                        'entry_date': entry_date,
+                        'exit_date': exit_date,
+                        'entry_price': entry_price,
+                        'exit_price': exit_price,
+                        'return': ret,
+                        'win': ret > 0,
+                        'reason': exit_reason,
+                        'pred_prob': row['pred_prob']
+                    })
+        
+                if not trade_list:
+                    st.info("No trades completed (insufficient data after entry).")
+                else:
+                    trades_df = pd.DataFrame(trade_list)
+            
+                    # --- Trade table ---
+                    trade_table = pd.DataFrame({
+                        'Entry Date': trades_df['entry_date'].dt.strftime('%Y-%m-%d'),
+                        'Exit Date': trades_df['exit_date'].dt.strftime('%Y-%m-%d'),
+                        'Exit Reason': trades_df['reason'],
+                        'Predicted Prob': trades_df['pred_prob'].round(3),
+                        'Return': trades_df['return'].round(4),
+                        'Win/Loss': trades_df['win'].map({True: 'Win', False: 'Loss'})
+                    })
+                    st.subheader("📊 Trade-by-Trade Breakdown (TP/SL exit)")
+                    st.dataframe(trade_table, use_container_width=True)
+            
+                    # --- Summary metrics ---
+                    win_rate = trades_df['win'].mean()
+                    avg_win = trades_df.loc[trades_df['win'], 'return'].mean() if trades_df['win'].any() else 0
+                    avg_loss = trades_df.loc[~trades_df['win'], 'return'].mean() if (~trades_df['win']).any() else 0
+                    profit_factor = (trades_df.loc[trades_df['win'], 'return'].sum() / 
+                                     abs(trades_df.loc[~trades_df['win'], 'return'].sum())) if (~trades_df['win']).any() and trades_df.loc[trades_df['win'], 'return'].sum() > 0 else np.inf
+            
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Win Rate", f"{win_rate:.1%}")
+                    col2.metric("Avg Win", f"{avg_win:.2%}")
+                    col2.metric("Avg Loss", f"{avg_loss:.2%}")
+                    col3.metric("Profit Factor", f"{profit_factor:.2f}")
+                
+                    # --- Exit reason breakdown (optional) ---
+                    st.caption("Exit reason distribution")
+                    reason_counts = trades_df['reason'].value_counts()
+                    st.bar_chart(reason_counts)
+            
+                    # --- Equity curve (using actual exit dates) ---
+                    # We'll build a daily return series that applies each trade's return on its exit date
+                    strategy_returns = pd.Series(0.0, index=df_test.index)
+                    for _, trade in trades_df.iterrows():
+                        exit_date = trade['exit_date']
+                        # If multiple trades exit on the same day, sum their returns
+                        strategy_returns[exit_date] += trade['return']
+        
+                    strategy_cumulative = (1 + strategy_returns).cumprod()
+                    # Benchmark: buy & hold on the same days? For simplicity, use daily returns of the stock
+                    market_returns = df_test['Close'].pct_change().fillna(0)
+                    market_cumulative = (1 + market_returns).cumprod()
+        
+                    fig_back = go.Figure()
+                    fig_back.add_trace(go.Scatter(x=df_test.index, y=market_cumulative,
+                                                  mode='lines', name='Buy & Hold'))
+                    fig_back.add_trace(go.Scatter(x=strategy_cumulative.index, y=strategy_cumulative,
+                                                  mode='lines', name='AI Strategy (TP/SL)'))
+                    fig_back.update_layout(title="Equity Curve (Test Period)", xaxis_title="Date", yaxis_title="Cumulative Return")
+                    st.plotly_chart(fig_back, use_container_width=True)
 
             # --- Probability Calibration (nested expander) ---
             with st.expander("📊 Probability Calibration"):
@@ -1037,6 +1213,29 @@ if st.session_state.single_ticker_results is not None:
     else:
         with st.expander("📈 Backtest Performance (out‑of‑sample)"):
             st.info("Not enough test data to display backtest.")
+
+    # ==================== DURABILITY ASSESSMENT ====================
+    with st.expander("📊 Full Stock Health Assessment (Durable Competitive Advantage)"):
+        from durability_advanced import get_advanced_durability
+        ticker = st.session_state.main_ticker
+        adv = get_advanced_durability(ticker)
+        if adv and adv['grade'] != 'Insufficient Data':
+            grade_color = {'A':'green','B':'lightgreen','C':'orange','D':'salmon','F':'red'}.get(adv['grade'], 'gray')
+            st.markdown(f"### Overall Durable Competitive Advantage Grade: <span style='background-color:{grade_color}; padding:0.2em 0.5em; border-radius:0.3em; font-size:1.5em;'>{adv['grade']}</span>", unsafe_allow_html=True)
+            st.caption(f"Tally: ✅ {adv['strong_count']} strong signs, ⚠️ {adv['moderate_count']} moderate, ❌ {adv['weak_count']} weak")
+            
+            # Show ALL metrics in a clean table
+            with st.expander("📋 Detailed Assessment Results (all metrics)", expanded=True):
+                df_details = pd.DataFrame(list(adv['details'].items()), columns=['Metric', 'Assessment'])
+                st.dataframe(df_details, use_container_width=True, height=400)
+            
+            # Optional: show raw numeric metrics in a second expander
+            with st.expander("🔢 Raw Numerical Metrics"):
+                num_metrics = {k: v for k, v in adv['metrics'].items() if not isinstance(v, pd.Series)}
+                df_num = pd.DataFrame(list(num_metrics.items()), columns=['Metric', 'Value'])
+                st.dataframe(df_num)
+        else:
+            st.info(f"Insufficient financial data for {ticker}. Check that ticker symbol is correct and the company has at least 5 years of annual financial statements.")
 
     # --- Feature importance (optional) ---
     if st.checkbox("Show what XGBoost learned"):
@@ -1110,35 +1309,118 @@ else:
 st.sidebar.write(f"📊 Scanning **{len(ticker_list)}** tickers")
 
 @st.cache_data(ttl=21600)
-def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid):
-    print(f"[CACHE] Alpha = {alpha}")
+def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, profit_target):
+    """
+    Scans a list of tickers using batch download for price data (1 API call for all tickers).
+    Then processes each ticker sequentially with the existing model logic.
+    """
     results = []
-    for ticker in tickers:
-        try:
-            df_t = yf.download(ticker, period=period, progress=False)
-            if df_t.empty:
-                results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "No data", "Prob": 0.0})
+    
+    # ---------------------------
+    # 1. Batch download all tickers' price data in a single request
+    # ---------------------------
+    try:
+        # Download all tickers at once, group by ticker
+        all_data = yf.download(tickers, period=period, group_by='ticker', progress=False)
+        if all_data.empty:
+            st.error("Batch download returned no data.")
+            return results
+    except Exception as e:
+        st.error(f"Batch download failed: {e}")
+        return results
+
+    # If only one ticker was passed, yfinance returns a different structure
+    if len(tickers) == 1:
+        ticker = tickers[0]
+        # For single ticker, all_data is a DataFrame without the outer 'ticker' level
+        df_dict = {ticker: all_data}
+    else:
+        # For multiple tickers, all_data is a MultiIndex DataFrame: (ticker, price column)
+        # Convert to dict of DataFrames per ticker
+        df_dict = {}
+        for ticker in tickers:
+            try:
+                # Extract the slice for this ticker
+                ticker_data = all_data[ticker].copy()
+                # Ensure it's a DataFrame (it should be)
+                if not ticker_data.empty:
+                    df_dict[ticker] = ticker_data
+                else:
+                    df_dict[ticker] = pd.DataFrame()
+            except KeyError:
+                # Ticker not found in the batch download
+                df_dict[ticker] = pd.DataFrame()
                 continue
 
-            if isinstance(df_t.columns, pd.MultiIndex):
-                df_t.columns = df_t.columns.droplevel(1)
+    # ---------------------------
+    # 2. Process each ticker using its downloaded DataFrame
+    # ---------------------------
+    for ticker in tickers:
+        df_t = df_dict.get(ticker, pd.DataFrame())
+        if df_t.empty:
+            results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "No data", "Prob": 0.0})
+            continue
 
-            # Debug: print raw data for AAPL
-            if ticker == 'AAPL':
-                print("\n--- Multi‑scanner raw data (last 3 days) ---")
-                print(df_t[['Open','High','Low','Close','Volume']].tail(3))
+        # Ensure the index is datetime (already is from yfinance)
+        # Add technical indicators
+        df_t = safe_add_ta_features(df_t)
 
-            df_t = safe_add_ta_features(df_t)
+        # Basic macro for stock‑specific model
+        basic_macro = macro_sector_df[['VIX', 'TNX', 'CL']]
+        df_t_basic = df_t.copy()
+        df_t_basic = df_t_basic.join(basic_macro, how='left').ffill().bfill()
 
-            # --- Basic DataFrame for stock‑specific model (technical indicators + VIX, TNX, CL) ---
-            basic_macro = macro_sector_df[['VIX', 'TNX', 'CL']]
-            df_t_basic = df_t.copy()
-            df_t_basic = df_t_basic.join(basic_macro, how='left').ffill().bfill()
+        # ---------- Same logic as before (unchanged) ----------
+        if alpha < 0.01:   # old per‑stock scanner
+            feature_cols = [c for c in df_t_basic.columns if c not in ['Open','High','Low','Close','Volume']]
+            split = int(len(df_t_basic) * 0.8)
+            train = df_t_basic.iloc[:split]
+            X_train = train[feature_cols].fillna(0)
+            y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
 
-            if alpha < 0.01:          # treat values less than 0.01 as zero
-                print("[CACHE] Using old per-stock model")
-                
-                # --- OLD PER‑STOCK SCANNER (no enhanced features) ---
+            xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
+            rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
+            lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+
+            xgb_t.fit(X_train, y_train)
+            rf_t.fit(X_train, y_train)
+            lgb_t.fit(X_train, y_train)
+
+            ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
+            ensemble_t.fit(X_train, y_train)
+
+            latest = df_t_basic[feature_cols].fillna(0).iloc[[-1]]
+            prob = ensemble_t.predict_proba(latest)[0][1]
+            results.append({
+                "Ticker": ticker,
+                "Sector": TICKERS.get(ticker, "Unknown"),
+                "Signal": f"{prob:.1%}",
+                "Prob": prob
+            })
+
+        else:   # pooled or hybrid model
+            # Need fundamentals and sector ETF for enhanced features
+            fundamentals = get_fundamentals(ticker)
+            ticker_sector = TICKERS.get(ticker, 'Unknown')
+            sector_etf = sector_to_etf.get(ticker_sector, None)
+            df_t_enhanced = fe.add_enhanced_features(df_t.copy(), ticker, macro_sector_df, sector_etf, fundamentals)
+
+            if pooled_model is not None and pooled_feature_cols is not None:
+                # Align columns for pooled model
+                for col in pooled_feature_cols:
+                    if col not in df_t_enhanced.columns:
+                        df_t_enhanced[col] = 0
+                latest_enhanced = df_t_enhanced[pooled_feature_cols].fillna(0).iloc[[-1]]
+                prob_raw = pooled_model.predict_proba(latest_enhanced)[0][1]
+
+                if use_hybrid and 0 < alpha < 1:
+                    stock_model, stock_feature_cols = get_stock_specific_model(ticker, df_t_basic)
+                    latest_basic = df_t_basic[stock_feature_cols].fillna(0).iloc[[-1]]
+                    stock_prob = stock_model.predict_proba(latest_basic)[0][1]
+                    prob_raw = alpha * prob_raw + (1 - alpha) * stock_prob
+
+            else:
+                # Fallback (should not happen)
                 feature_cols = [c for c in df_t_basic.columns if c not in ['Open','High','Low','Close','Volume']]
                 split = int(len(df_t_basic) * 0.8)
                 train = df_t_basic.iloc[:split]
@@ -1157,81 +1439,17 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid):
                 ensemble_t.fit(X_train, y_train)
 
                 latest = df_t_basic[feature_cols].fillna(0).iloc[[-1]]
-                prob = ensemble_t.predict_proba(latest)[0][1]
-                results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": f"{prob:.1%}", "Prob": prob})
+                prob_raw = ensemble_t.predict_proba(latest)[0][1]
 
-            else:
-                print("[CACHE] Using pooled model")
-
-                # --- Enhanced DataFrame for pooled model (sector ETFs, relative strength, fundamentals) ---
-                fundamentals = get_fundamentals(ticker)
-                ticker_sector = TICKERS.get(ticker, 'Unknown')
-                sector_etf = sector_to_etf.get(ticker_sector, None)
-                df_t_enhanced = fe.add_enhanced_features(df_t.copy(), ticker, macro_sector_df, sector_etf, fundamentals)
-
-                if pooled_model is not None and pooled_feature_cols is not None:
-                    # Align columns for pooled model
-                    for col in pooled_feature_cols:
-                        if col not in df_t_enhanced.columns:
-                            df_t_enhanced[col] = 0
-                    latest_enhanced = df_t_enhanced[pooled_feature_cols].fillna(0).iloc[[-1]]
-
-                    # Debug: print features for AAPL
-                    if ticker == 'AAPL':
-                        print(f"\n--- Multi‑scanner features for AAPL ---")
-                        print(latest_enhanced.head(10).T)
-                        print("---------------------------------------\n")
-
-                    prob_raw = pooled_model.predict_proba(latest_enhanced)[0][1]
-
-                    # --- Hybrid blending (if enabled and alpha between 0 and 1) ---
-                    if use_hybrid and 0 < alpha < 1:
-                        # Get cached stock‑specific model (using basic data)
-                        stock_model, stock_feature_cols = get_stock_specific_model(ticker, df_t_basic)
-                        latest_basic = df_t_basic[stock_feature_cols].fillna(0).iloc[[-1]]
-                        stock_prob = stock_model.predict_proba(latest_basic)[0][1]
-                        prob_raw = alpha * prob_raw + (1 - alpha) * stock_prob
-
-                else:
-                    # Fallback (should not happen)
-                    feature_cols = [c for c in df_t_basic.columns if c not in ['Open','High','Low','Close','Volume']]
-                    split = int(len(df_t_basic) * 0.8)
-                    train = df_t_basic.iloc[:split]
-                    X_train = train[feature_cols].fillna(0)
-                    y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
-
-                    xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
-                    rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
-                    lgb_t = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
-
-                    xgb_t.fit(X_train, y_train)
-                    rf_t.fit(X_train, y_train)
-                    lgb_t.fit(X_train, y_train)
-
-                    ensemble_t = VotingClassifier([('xgb', xgb_t), ('rf', rf_t), ('lgb', lgb_t)], voting='soft')
-                    ensemble_t.fit(X_train, y_train)
-
-                    latest = df_t_basic[feature_cols].fillna(0).iloc[[-1]]
-                    prob_raw = ensemble_t.predict_proba(latest)[0][1]
-
-                prob_cal = calibrate_prob(prob_raw, calibration_map)
-
-                # Debug: print for a few tickers
-                if ticker in ['AAPL', 'MSFT', 'NVDA']:
-                    print(f"[DEBUG] {ticker}: raw={prob_raw:.3f}, cal={prob_cal:.3f}")
-
-                results.append({
-                    "Ticker": ticker,
-                    "Sector": TICKERS.get(ticker, "Unknown"),
-                    "Signal": f"{prob_raw:.1%}",
-                    "Prob": prob_raw,
-                    "Calibrated": prob_cal,
-                    "Position": f"{prob_cal:.0%}"
-                })
-
-        except Exception as e:
-            print(f"Error processing {ticker}: {e}")
-            results.append({"Ticker": ticker, "Sector": TICKERS.get(ticker, "Unknown"), "Signal": "Error", "Prob": 0.0})
+            prob_cal = calibrate_prob(prob_raw, calibration_map)
+            results.append({
+                "Ticker": ticker,
+                "Sector": TICKERS.get(ticker, "Unknown"),
+                "Signal": f"{prob_raw:.1%}",
+                "Prob": prob_raw,
+                "Calibrated": prob_cal,
+                "Position": f"{prob_cal:.0%}"
+            })
 
     return results
 
@@ -1249,14 +1467,14 @@ if scan_button:
         else:
             with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
                 macro_sector_df = get_macro_sector_data_cached(multi_period)
-                results = scan_tickers_fallback(ticker_list, macro_sector_df, alpha, multi_period, use_hybrid)
+                results = scan_tickers_fallback(ticker_list, macro_sector_df, alpha, multi_period, use_hybrid, profit_target)
                 increment_user_scans(user_email)
                 st.session_state.scanner_results = results
                 st.rerun()
     else:
         with st.spinner(f"Scanning {len(ticker_list)} tickers... this may take a minute."):
             macro_sector_df = get_macro_sector_data_cached(multi_period)
-            results = scan_tickers_fallback(ticker_list, macro_sector_df, alpha, multi_period, use_hybrid)
+            results = scan_tickers_fallback(ticker_list, macro_sector_df, alpha, multi_period, use_hybrid, profit_target)
             st.session_state.scanner_results = results
             st.rerun()
 
