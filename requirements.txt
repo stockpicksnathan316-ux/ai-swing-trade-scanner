@@ -13,3 +13,4 @@ python-dotenv
 requests
 supabase
 Authlib
+gunicorn
