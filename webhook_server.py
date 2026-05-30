@@ -25,24 +25,30 @@ supabase = create_client(supabase_url, supabase_key)
 @app.route('/webhook', methods=['POST'])
 def webhook():
     print("🔔 Webhook received!")
-    event = request.get_json()
-    print(f"Event type: {event.get('type')}")
     
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        email = session['customer_details']['email']
-        customer_id = session['customer']
-        print(f"📧 Email: {email}")
-        print(f"🆔 Customer ID: {customer_id}")
-        
-        supabase.table('paid_users').upsert({
-            'email': email,
-            'is_pro': True,
-            'stripe_customer_id': customer_id,
-            'created_at': datetime.utcnow().isoformat() 
-        }).execute()
-        
-        print(f"✅ Pro access granted to {email}")
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    endpoint_secret = os.getenv('STRIPE_WEBHOOK_SECRET')
+    
+    # Log partial signature for debugging (first 20 chars)
+    if sig_header:
+        print(f"📝 Signature (first 20 chars): {sig_header[:20]}...")
+    else:
+        print("⚠️ No Stripe-Signature header")
+    
+    # Verify signature
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+    except ValueError as e:
+        print(f"❌ Invalid payload: {e}")
+        print(f"Payload preview: {payload[:200]}...")
+        return jsonify({'error': 'Invalid payload'}), 400
+    except stripe.error.SignatureVerificationError as e:
+        print(f"❌ Signature verification failed: {e}")
+        print(f"Endpoint secret used (first 10 chars): {endpoint_secret[:10] if endpoint_secret else 'None'}...")
+        return jsonify({'error': 'Signature verification failed'}), 400
+    
+    print(f"✅ Event verified: {event['type']}")
         
     elif event['type'] == 'customer.subscription.deleted':
         sub = event['data']['object']
