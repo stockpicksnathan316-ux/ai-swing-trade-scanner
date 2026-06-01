@@ -132,10 +132,24 @@ def get_stock_specific_model(ticker, df_basic, force_retrain=False):
     X = df_clean[feature_columns]
     y = df_clean['target']
 
+    # Clean X: replace inf, fill NaN, convert to float32
+    X = X.replace([np.inf, -np.inf], 0.0)
+    X = X.fillna(0.0)
+    X = X.astype(np.float32)
+
+    # Clean y: ensure integer
+    y = y.fillna(0).astype(int)
+
+    # Drop constant columns (they can cause XGBoost to fail)
+    constant_cols = [col for col in X.columns if X[col].nunique() <= 1]
+    if constant_cols:
+        X = X.drop(columns=constant_cols)
+        # Update feature_columns to match the remaining columns
+        feature_columns = X.columns.tolist()
+
     split_idx = int(len(df_clean) * 0.8)
     X_train = X.iloc[:split_idx]
     y_train = y.iloc[:split_idx]
-    y_train = y.iloc[:split_idx].astype(int) 
 
     # XGBoost with grid search
     xgb_param_grid = {
