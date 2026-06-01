@@ -1502,7 +1502,6 @@ if st.session_state.get('scanner_results'):
     if 'Calibrated' in df_results.columns:
         df_results['Calibrated'] = pd.to_numeric(df_results['Calibrated'], errors='coerce')
         df_results = df_results.sort_values('Calibrated', ascending=False)
-        # Keep 'Position' if present, drop the other intermediate columns
         cols_to_drop = ['Prob', 'Calibrated']
         if 'Position' in df_results.columns:
             df_results = df_results.drop(columns=[c for c in cols_to_drop if c in df_results.columns])
@@ -1546,13 +1545,11 @@ if st.session_state.get('scanner_results'):
         except:
             return ''
 
-if not df_results.empty and 'Signal' in df_results.columns:
-    styled_df = df_results.style.map(color_signal, subset=['Signal'])   # use .map, not .applymap
-    st.dataframe(styled_df, width='stretch')
-else:
-    st.info("No scanner results to display.")
-
-    st.dataframe(styled_df, width='stretch')
+    if not df_results.empty and 'Signal' in df_results.columns:
+        styled_df = df_results.style.map(color_signal, subset=['Signal'])
+        st.dataframe(styled_df, width='stretch')
+    else:
+        st.info("No scanner results to display.")
 
     if st.button("📥 Export Scanner Results to CSV"):
         df_results.to_csv("scanner_results.csv", index=False)
