@@ -135,6 +135,7 @@ def get_stock_specific_model(ticker, df_basic, force_retrain=False):
     split_idx = int(len(df_clean) * 0.8)
     X_train = X.iloc[:split_idx]
     y_train = y.iloc[:split_idx]
+    y_train = y.iloc[:split_idx].astype(int) 
 
     # XGBoost with grid search
     xgb_param_grid = {
@@ -653,7 +654,7 @@ if scan_single:
     # ------------------------------------------------------------------
     if alpha == 0:
         # --- OLD PER‑STOCK SCANNER ---
-        model, feature_cols = get_stock_specific_model(ticker, df_basic)
+        model, feature_cols = get_stock_specific_model(ticker, df_basic, force_retrain=True)
         latest_row = df_basic[feature_cols].fillna(0).iloc[[-1]]
         latest_row = ensure_numeric(latest_row)
         live_prob = model.predict_proba(latest_row)[0][1]
@@ -717,6 +718,8 @@ if scan_single:
         split_idx = int(len(df_clean) * 0.8)
         X_train = X.iloc[:split_idx]
         y_train = y.iloc[:split_idx]
+
+
         X_test = X.iloc[split_idx:]
         y_test = y.iloc[split_idx:]
 
