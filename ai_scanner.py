@@ -677,21 +677,18 @@ if scan_single:
         if not is_above_long_term_ma(df, period=200):
             st.warning("⚠️ Stock is below its 200-day moving average. Long signals are filtered out.")
             live_prob = 0.0
-
-        # Prepare latest row for live prediction
-        latest_row = df_basic[feature_cols].fillna(0).iloc[[-1]]
-        live_prob = model.predict_proba(latest_row)[0][1]
+        # (No second prediction – the filtered value is final)
 
         # Prepare test set for backtest
         df_clean = df_basic.copy()
         df_clean['future_close'] = df_clean['Close'].shift(-5)
         df_clean['target'] = (df_clean['future_close'] > df_clean['Close']).astype(int)
         df_clean = df_clean.dropna(subset=['target']).copy()
-        feature_columns = [col for col in df_clean.columns if col not in
-                           ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
+        # Use the exact feature columns returned by the model
         split_idx = int(len(df_clean) * 0.8)
-        X_test = df_clean.iloc[split_idx:][feature_columns].fillna(0)
-        X_test = ensure_numeric(X_test) 
+        X_test = df_clean.iloc[split_idx:][feature_cols].fillna(0)
+        X_test = ensure_numeric(X_test)
+        X_test = X_test.replace([np.inf, -np.inf], 0).fillna(0).astype(np.float32)
         y_test = df_clean.iloc[split_idx:]['target']
         y_test_pred_proba = model.predict_proba(X_test)[:, 1]
         y_test_pred_class = (y_test_pred_proba > class_threshold).astype(int)
