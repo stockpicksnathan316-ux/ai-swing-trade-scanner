@@ -655,6 +655,7 @@ if scan_single:
         # --- OLD PER‑STOCK SCANNER ---
         model, feature_cols = get_stock_specific_model(ticker, df_basic)
         latest_row = df_basic[feature_cols].fillna(0).iloc[[-1]]
+        latest_row = ensure_numeric(latest_row)
         live_prob = model.predict_proba(latest_row)[0][1]
 
         # Trend filter
@@ -675,6 +676,7 @@ if scan_single:
                            ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
         split_idx = int(len(df_clean) * 0.8)
         X_test = df_clean.iloc[split_idx:][feature_columns].fillna(0)
+        X_test = ensure_numeric(X_test) 
         y_test = df_clean.iloc[split_idx:]['target']
         y_test_pred_proba = model.predict_proba(X_test)[:, 1]
         y_test_pred_class = (y_test_pred_proba > class_threshold).astype(int)
