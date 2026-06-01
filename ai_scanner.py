@@ -1532,7 +1532,11 @@ if st.session_state.get('scanner_results'):
 
     def color_signal(val):
         try:
-            pct = float(val.strip('%')) / 100
+            if pd.isna(val):
+                return ''
+            if isinstance(val, str):
+                val = val.replace('%', '')
+            pct = float(val) / 100
             if pct > 0.65:
                 return 'background-color: #2e7d32; color: white; font-weight: bold;'
             elif pct < 0.35:
@@ -1540,9 +1544,14 @@ if st.session_state.get('scanner_results'):
             else:
                 return 'background-color: #f5f5f5; color: #1e1e1e;'
         except:
-            return 'background-color: #f5f5f5; color: #1e1e1e;'
+            return ''
 
-    styled_df = df_results.style.applymap(color_signal, subset=['Signal'])
+if not df_results.empty and 'Signal' in df_results.columns:
+    styled_df = df_results.style.map(color_signal, subset=['Signal'])   # use .map, not .applymap
+    st.dataframe(styled_df, width='stretch')
+else:
+    st.info("No scanner results to display.")
+
     st.dataframe(styled_df, width='stretch')
 
     if st.button("📥 Export Scanner Results to CSV"):
