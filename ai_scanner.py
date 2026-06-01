@@ -1425,11 +1425,13 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, p
                     if col not in df_t_enhanced.columns:
                         df_t_enhanced[col] = 0
                 latest_enhanced = df_t_enhanced[pooled_feature_cols].fillna(0).iloc[[-1]]
+                latest_enhanced = ensure_numeric(latest_enhanced)
                 prob_raw = pooled_model.predict_proba(latest_enhanced)[0][1]
 
                 if use_hybrid and 0 < alpha < 1:
                     stock_model, stock_feature_cols = get_stock_specific_model(ticker, df_t_basic)
                     latest_basic = df_t_basic[stock_feature_cols].fillna(0).iloc[[-1]]
+                    latest_basic = ensure_numeric(latest_basic)
                     stock_prob = stock_model.predict_proba(latest_basic)[0][1]
                     prob_raw = alpha * prob_raw + (1 - alpha) * stock_prob
 
@@ -1453,6 +1455,7 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, p
                 ensemble_t.fit(X_train, y_train)
 
                 latest = df_t_basic[feature_cols].fillna(0).iloc[[-1]]
+                latest = ensure_numeric(latest)
                 prob_raw = ensemble_t.predict_proba(latest)[0][1]
 
             prob_cal = calibrate_prob(prob_raw, calibration_map)
