@@ -1390,7 +1390,9 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, p
             split = int(len(df_t_basic) * 0.8)
             train = df_t_basic.iloc[:split]
             X_train = train[feature_cols].fillna(0)
+            X_train = ensure_numeric(X_train)
             y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
+            y_train = y_train.astype(int)
 
             xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
             rf_t = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
@@ -1404,6 +1406,7 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, p
             ensemble_t.fit(X_train, y_train)
 
             latest = df_t_basic[feature_cols].fillna(0).iloc[[-1]]
+            latest = ensure_numeric(latest)
             prob = ensemble_t.predict_proba(latest)[0][1]
             results.append({
                 "Ticker": ticker,
@@ -1441,6 +1444,7 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, p
                 split = int(len(df_t_basic) * 0.8)
                 train = df_t_basic.iloc[:split]
                 X_train = train[feature_cols].fillna(0)
+                X_train = ensure_numeric(X_train)
                 y_train = (train['Close'].shift(-5) > train['Close']).astype(int).fillna(0)
 
                 xgb_t = xgb.XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42)
