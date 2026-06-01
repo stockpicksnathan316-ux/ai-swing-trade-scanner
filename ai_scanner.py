@@ -792,10 +792,12 @@ if scan_single:
                               ['Open', 'High', 'Low', 'Close', 'Volume', 'future_close', 'target']]
         split_idx_basic = int(len(df_clean_basic) * 0.8)
         X_test_basic = df_clean_basic.iloc[split_idx_basic:][feature_cols_basic].fillna(0)
+        X_test_basic = ensure_numeric(X_test_basic) 
         y_test_basic = df_clean_basic.iloc[split_idx_basic:]['target']
         stock_test_proba = stock_model.predict_proba(X_test_basic)[:, 1]
 
         latest_basic = df_clean_basic[feature_cols_basic].fillna(0).iloc[[-1]]
+        latest_basic = ensure_numeric(latest_basic)
         stock_live_prob = stock_model.predict_proba(latest_basic)[0][1]
 
         # 3. Blend probabilities
