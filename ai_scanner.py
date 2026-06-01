@@ -669,6 +669,7 @@ if scan_single:
     if alpha == 0:
         # --- OLD PER‑STOCK SCANNER ---
         model, feature_cols = get_stock_specific_model(ticker, df_basic, force_retrain=True)
+        feature_columns = feature_cols
         latest_row = df_basic[feature_cols].fillna(0).iloc[[-1]]
         latest_row = ensure_numeric(latest_row)
         live_prob = model.predict_proba(latest_row)[0][1]
