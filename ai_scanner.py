@@ -20,6 +20,13 @@ from feature_engineering import get_fundamentals
 import hashlib
 import time
 
+def ensure_numeric(df):
+    """Convert all columns to float32, replace inf, and fill NaN with 0."""
+    df = df.astype(np.float32)
+    df = df.replace([np.inf, -np.inf], 0.0)
+    df = df.fillna(0.0)
+    return df
+
 MIN_TRADES_FOR_CALIBRATION = 10
 
 # ------------------- Calibration helper -------------------
@@ -716,12 +723,14 @@ if scan_single:
 
         if pooled_model is not None and pooled_feature_cols is not None:
             X_test_aligned = X_test.reindex(columns=pooled_feature_cols, fill_value=0)
+            X_test_aligned = ensure_numeric(X_test_aligned)
             y_test_pred_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
             y_test_pred_class = (y_test_pred_proba > class_threshold).astype(int)
             acc = accuracy_score(y_test, y_test_pred_class)
             prec = precision_score(y_test, y_test_pred_class, zero_division=0)
 
             latest_features = df_clean[feature_columns].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+            latest_features = ensure_numeric(latest_features)
 
 
             live_prob_raw = pooled_model.predict_proba(latest_features)[0][1]
@@ -763,9 +772,12 @@ if scan_single:
         y_test_enhanced = y_enhanced.iloc[split_idx:]
 
         X_test_aligned = X_test_enhanced.reindex(columns=pooled_feature_cols, fill_value=0)
+        # Convert all columns to float32 (XGBoost requires numeric input)
+        X_test_aligned = X_test_aligned.astype(np.float32)
         pooled_test_proba = pooled_model.predict_proba(X_test_aligned)[:, 1]
 
         latest_enhanced = df_clean_enhanced[feature_columns_enhanced].iloc[[-1]].fillna(0).reindex(columns=pooled_feature_cols, fill_value=0)
+        latest_enhanced = ensure_numeric(latest_enhanced)
         pooled_live_prob = pooled_model.predict_proba(latest_enhanced)[0][1]
 
         # 2. Stock‑specific model (cached, using basic features)
