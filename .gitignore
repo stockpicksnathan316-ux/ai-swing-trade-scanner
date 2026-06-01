@@ -32,3 +32,6 @@ For over 10 years*
 Formula.txt
 stripe-webhook/"stock_model_*.pkl" 
 "stock_features_*.pkl" 
+"tick_sniper_cache/" 
+ai_backup_scanner_durability.py
+ai_scanner_complete_working_model.py
