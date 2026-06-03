@@ -1265,6 +1265,18 @@ if st.session_state.single_ticker_results is not None:
                 num_metrics = {k: v for k, v in adv['metrics'].items() if not isinstance(v, pd.Series)}
                 df_num = pd.DataFrame(list(num_metrics.items()), columns=['Metric', 'Value'])
                 st.dataframe(df_num)
+
+            # Inside the durability expander, after showing the grade and details
+            quarterly_eps = adv.get('quarterly_eps')
+            if quarterly_eps is not None and not quarterly_eps.empty:
+                st.subheader("📈 Quarterly EPS (last 8 quarters)")
+                # Convert to DataFrame for display
+                eps_df = quarterly_eps.reset_index()
+                eps_df.columns = ['Date', 'EPS']
+                # Format EPS as dollar amounts
+                eps_df['EPS'] = eps_df['EPS'].apply(lambda x: f"${x:.2f}")
+                st.dataframe(eps_df, use_container_width=True)
+
         else:
             st.info(f"Insufficient financial data for {ticker}. Check that ticker symbol is correct and the company has at least 5 years of annual financial statements.")
 

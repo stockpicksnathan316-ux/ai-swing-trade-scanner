@@ -1,6 +1,7 @@
 """
 durability_advanced.py - Full Stock Health Assessment (Durable Competitive Advantage)
-Now with aggressive field name fallbacks, computed gross profit, and quarterly fallback.
+Now with aggressive field name fallbacks, computed gross profit, quarterly fallback,
+improved shares fallback, guarded dep_high, and quarterly EPS extraction.
 """
 
 import yfinance as yf
@@ -10,7 +11,29 @@ import streamlit as st
 from datetime import datetime
 
 # ------------------------------------------------------------
-# 1. Fetch annual + quarterly data
+# Helper: assess EPS trend (moved above analyze_company)
+# ------------------------------------------------------------
+def assess_eps_trend_annual(net_income_series, shares_series):
+    """Return 'strong', 'moderate', 'weak', or 'insufficient' based on EPS trend."""
+    if net_income_series.empty or shares_series.empty:
+        return 'insufficient'
+    min_len = min(len(net_income_series), len(shares_series))
+    if min_len < 5:
+        return 'insufficient'
+    eps = net_income_series.iloc[-min_len:] / shares_series.iloc[-min_len:]
+    y = eps.values
+    x = np.arange(len(y))
+    slope = np.polyfit(x, y, 1)[0]
+    cv = y.std() / y.mean() if y.mean() != 0 else 999
+    if slope > 0.05 * y.mean() and cv < 0.5:
+        return 'strong'
+    elif slope < -0.05 * y.mean() or cv > 1.0:
+        return 'weak'
+    else:
+        return 'moderate'
+
+# ------------------------------------------------------------
+# Fetch annual + quarterly data
 # ------------------------------------------------------------
 @st.cache_data(ttl=86400)
 def fetch_all_data(ticker: str):
@@ -45,42 +68,7 @@ def fetch_all_data(ticker: str):
         return None
 
 # ------------------------------------------------------------
-# 2. Helper functions
-# ------------------------------------------------------------
-def get_value(df, field_names, position=-1):
-    if df is None or df.empty:
-        return np.nan
-    if not isinstance(field_names, list):
-        field_names = [field_names]
-    for name in field_names:
-        if name in df.index:
-            series = df.loc[name]
-            if len(series) > abs(position):
-                val = series.iloc[position]
-                if isinstance(val, (int, float)):
-                    return val
-    # Special case: Gross Profit
-    if 'Gross Profit' in field_names and 'Total Revenue' in df.index and 'Cost Of Revenue' in df.index:
-        rev = df.loc['Total Revenue'].iloc[position]
-        cost = df.loc['Cost Of Revenue'].iloc[position]
-        if isinstance(rev, (int, float)) and isinstance(cost, (int, float)):
-            return rev - cost
-    return np.nan
-
-def get_series(df, field_names, max_years=10):
-    if df is None or df.empty:
-        return pd.Series(dtype=float)
-    if not isinstance(field_names, list):
-        field_names = [field_names]
-    for name in field_names:
-        if name in df.index:
-            series = df.loc[name].iloc[-max_years:]
-            series = pd.to_numeric(series, errors='coerce')
-            return series
-    return pd.Series(dtype=float)
-
-# ------------------------------------------------------------
-# 3. Main analysis – uses annual first, then quarterly fallback
+# Main analysis – uses annual first, then quarterly fallback
 # ------------------------------------------------------------
 def analyze_company(ticker: str):
     data = fetch_all_data(ticker)
@@ -136,32 +124,85 @@ def analyze_company(ticker: str):
     latest_ni = get_income_value(['Net Income', 'Net Income Common Stockholders', 'Net Profit'])
     latest_interest = get_income_value(['Interest Expense', 'Interest Paid'])
     
-    # SG&A, R&D, Depreciation – use same helper (works for AAPL)
     # SG&A, R&D, Depreciation – with AAPL-specific exact names
     latest_sganda = get_income_value([
         'Selling General & Administrative', 
         'SG&A', 
         'Selling, General & Administrative', 
         'Selling, General & Administrative Expense',
-        'Selling General And Administration'   # exact AAPL annual name
+        'Selling General And Administration'
     ])
     latest_rnd = get_income_value([
         'Research & Development', 
         'R&D', 
         'Research and Development',
-        'Research And Development'   # exact AAPL annual name
+        'Research And Development'
     ])
     latest_dep = get_income_value([
         'Depreciation & Amortization', 
         'Depreciation', 
         'Depreciation and Amortization',
-        'Reconciled Depreciation'   # AAPL alternative
+        'Reconciled Depreciation'
     ])
     
     # For EPS trend, use net income series (prefer annual)
     net_income_series = get_series_safe(inc_annual, ['Net Income', 'Net Income Common Stockholders', 'Net Profit'])
     if net_income_series.empty:
         net_income_series = get_series_safe(inc_quarterly, ['Net Income', 'Net Income Common Stockholders', 'Net Profit'])
+    
+    # ----- Quarterly EPS: fetch directly from yfinance (multiple methods) -----
+    quarterly_eps = pd.Series(dtype=float)
+    ticker_obj = yf.Ticker(ticker)
+    
+    # Method 1: quarterly_earnings
+    try:
+        earnings = ticker_obj.quarterly_earnings
+        if earnings is not None and not earnings.empty:
+            eps_col = next((col for col in ['eps', 'EPS', 'eps_actual', 'reported_eps'] if col in earnings.columns), None)
+            if eps_col:
+                quarterly_eps = earnings[eps_col].sort_index().iloc[-8:]
+    except:
+        pass
+    
+    # Method 2: earnings (sometimes quarterly)
+    if quarterly_eps.empty:
+        try:
+            earnings = ticker_obj.earnings
+            if earnings is not None and not earnings.empty:
+                eps_col = next((col for col in ['eps', 'EPS', 'eps_actual', 'reported_eps'] if col in earnings.columns), None)
+                if eps_col:
+                    quarterly_eps = earnings[eps_col].sort_index().iloc[-8:]
+        except:
+            pass
+    
+    # Method 3: quarterly_income_stmt – look for EPS row
+    if quarterly_eps.empty:
+        try:
+            inc_q = ticker_obj.quarterly_income_stmt
+            if inc_q is not None and not inc_q.empty:
+                eps_rows = [row for row in inc_q.index if 'Basic EPS' in row or 'Diluted EPS' in row or 'Earnings Per Share' in row]
+                if eps_rows:
+                    eps_series = inc_q.loc[eps_rows[0]].dropna()
+                    eps_series = eps_series.sort_index()
+                    quarterly_eps = eps_series.iloc[-8:]
+                else:
+                    # Fallback: compute EPS from Net Income and shares outstanding
+                    net_income = inc_q.loc['Net Income'] if 'Net Income' in inc_q.index else pd.Series(dtype=float)
+                    if not net_income.empty:
+                        # Try to get shares from balance sheet
+                        bal_q = ticker_obj.quarterly_balance_sheet
+                        shares = bal_q.loc['Common Stock Shares Outstanding'] if bal_q is not None and 'Common Stock Shares Outstanding' in bal_q.index else pd.Series(dtype=float)
+                        if not shares.empty:
+                            # Align indices
+                            common_idx = net_income.index.intersection(shares.index)
+                            if len(common_idx) > 0:
+                                eps_computed = net_income[common_idx] / shares[common_idx]
+                                quarterly_eps = eps_computed.iloc[-8:]
+        except Exception as e:
+            st.warning(f"Could not extract quarterly EPS via income statement: {e}")
+    
+    if quarterly_eps.empty:
+        st.warning(f"No quarterly EPS data available for {ticker} after all methods.")
     
     # Operating profit consistency: take last 3 non‑null values
     op_series = get_series_safe(inc_annual, ['Operating Income', 'EBIT', 'Operating Profit']).dropna()
@@ -188,18 +229,24 @@ def analyze_company(ticker: str):
     inventory = get_balance_value(['Inventory', 'Total Inventory'])
     receivables = get_balance_value(['Receivables', 'Accounts Receivable', 'Gross Accounts Receivable'])
     
-    # Shares outstanding
-    shares_series = get_series_safe(bal_annual, ['Common Stock Shares Outstanding'])
-    if shares_series.empty:
-        shares_series = get_series_safe(bal_quarterly, ['Common Stock Shares Outstanding'])
-    if shares_series.empty:
+    # Shares outstanding – ensure full length series (for annual trend)
+    shares_series_raw = get_series_safe(bal_annual, ['Common Stock Shares Outstanding'])
+    if shares_series_raw.empty:
+        shares_series_raw = get_series_safe(bal_quarterly, ['Common Stock Shares Outstanding'])
+    
+    if not shares_series_raw.empty:
+        latest_shares = shares_series_raw.dropna().iloc[-1]
+        shares_series = pd.Series(latest_shares, index=net_income_series.index)
+    else:
         try:
-            stock_info = yf.Ticker(ticker).info
-            shares_out = stock_info.get('sharesOutstanding')
-            if shares_out:
-                shares_series = pd.Series([shares_out] * len(net_income_series), index=net_income_series.index)
+            info = yf.Ticker(ticker).info
+            shares = info.get('sharesOutstanding')
+            if shares:
+                shares_series = pd.Series(shares, index=net_income_series.index)
+            else:
+                shares_series = pd.Series(dtype=float)
         except:
-            pass
+            shares_series = pd.Series(dtype=float)
     
     # ----- Cash Flow: get single latest CapEx value and series -----
     cf_annual = annual['cashflow']
@@ -213,7 +260,6 @@ def analyze_company(ticker: str):
         return abs(val) if not np.isnan(val) else np.nan
     
     capex_latest = get_capex_value()
-    # Also get series for 10-year calculation
     capex_series = get_series_safe(cf_annual, ['Capital Expenditure', 'Capital Expenditures', 'Purchase Of Property Plant Equipment'])
     if capex_series.empty:
         capex_series = get_series_safe(cf_quarterly, ['Capital Expenditure', 'Capital Expenditures', 'Purchase Of Property Plant Equipment'])
@@ -224,7 +270,13 @@ def analyze_company(ticker: str):
     npm = (latest_ni / latest_rev * 100) if latest_rev not in [0, np.nan] else np.nan
     sganda_ratio = (latest_sganda / latest_gp * 100) if latest_gp not in [0, np.nan] else np.nan
     rnd_ratio = (latest_rnd / latest_gp * 100) if latest_gp not in [0, np.nan] else np.nan
-    dep_high = (latest_dep / latest_gp > 0.20) if latest_gp not in [0, np.nan] else False
+    
+    # Guard for dep_high
+    if not np.isnan(latest_gp) and latest_gp != 0:
+        dep_high = (latest_dep / latest_gp > 0.20)
+    else:
+        dep_high = False
+    
     interest_coverage = latest_op / latest_interest if latest_interest not in [0, np.nan] else np.nan
     current_ratio = current_assets / current_liabilities if current_liabilities not in [0, np.nan] else np.nan
     debt_to_equity = total_liabilities / shareholders_equity if shareholders_equity not in [0, np.nan] else np.nan
@@ -264,29 +316,12 @@ def analyze_company(ticker: str):
         'capex_10y': capex_10y_ratio,
         'revenue_series': pd.Series(),
         'net_income_series': net_income_series,
+        'quarterly_eps': quarterly_eps,   # <-- NEW: quarterly EPS series (last 8)
     }
     return metrics
 
-def assess_eps_trend_annual(net_income_series, shares_series):
-    if net_income_series.empty or shares_series.empty:
-        return 'insufficient'
-    min_len = min(len(net_income_series), len(shares_series))
-    if min_len < 5:
-        return 'insufficient'
-    eps = net_income_series.iloc[-min_len:] / shares_series.iloc[-min_len:]
-    y = eps.values
-    x = np.arange(len(y))
-    slope = np.polyfit(x, y, 1)[0]
-    cv = y.std() / y.mean() if y.mean() != 0 else 999
-    if slope > 0.05 * y.mean() and cv < 0.5:
-        return 'strong'
-    elif slope < -0.05 * y.mean() or cv > 1.0:
-        return 'weak'
-    else:
-        return 'moderate'
-
 # ------------------------------------------------------------
-# 4. Scoring (same as before)
+# Scoring (unchanged, but uses metrics with guarded dep_high)
 # ------------------------------------------------------------
 def compute_tally_and_grade(metrics):
     strong = 0
@@ -494,21 +529,21 @@ def compute_tally_and_grade(metrics):
         grade = 'Insufficient Data'
     else:
         strong_pct = strong / total
-        if strong_pct >= 0.8:      # 80%+ strong = A
+        if strong_pct >= 0.8:
             grade = 'A'
-        elif strong_pct >= 0.6:    # 60-80% strong = B
+        elif strong_pct >= 0.6:
             grade = 'B'
-        elif strong_pct >= 0.4:    # 40-60% strong = C
+        elif strong_pct >= 0.4:
             grade = 'C'
-        elif strong_pct >= 0.2:    # 20-40% strong = D
+        elif strong_pct >= 0.2:
             grade = 'D'
-        else:                       # <20% strong = F
+        else:
             grade = 'F'
     
     return strong, moderate, weak, grade, details
 
 # ------------------------------------------------------------
-# 5. Main public function
+# Main public function
 # ------------------------------------------------------------
 @st.cache_data(ttl=86400)
 def get_advanced_durability(ticker: str):
@@ -522,5 +557,6 @@ def get_advanced_durability(ticker: str):
         'moderate_count': moderate,
         'weak_count': weak,
         'details': details,
-        'metrics': metrics
+        'metrics': metrics,
+        'quarterly_eps': metrics.get('quarterly_eps', pd.Series(dtype=float))  # include quarterly EPS
     }
