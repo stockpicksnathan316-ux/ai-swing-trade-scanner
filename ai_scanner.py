@@ -333,7 +333,7 @@ if os.path.exists('ensemble_model_v3.pkl'):
     ensemble_model = joblib.load('ensemble_model_v3.pkl')
     feature_cols = joblib.load('feature_cols_v3.pkl')
     xgb_model = ensemble_model.named_estimators_['xgb']
-    st.sidebar.success("✅ Loaded enhanced model v3 (120 features)")
+    # st.sidebar.success("✅ Loaded enhanced model v3 (120 features)")
 elif os.path.exists('ensemble_model_v2.pkl'):
     ensemble_model = joblib.load('ensemble_model_v2.pkl')
     feature_cols = joblib.load('feature_cols_v2.pkl')
@@ -348,7 +348,7 @@ if 'feature_cols' not in locals():
 
 
 # ------------------- Page config -------------------
-st.set_page_config(page_title="AI Momentum Predictor", layout="wide")
+st.set_page_config(page_title="Tick Sniper Momentum Predictor", layout="wide")
 
 # ------------------- AUTHENTICATION -------------------
 if 'user_email' not in st.session_state:
@@ -393,6 +393,7 @@ if not st.session_state.user_email:
     st.stop()
 
 # ------------------- After login: show user info & logout -------------------
+st.sidebar.image("Tick_sniper_final_logo.png", width=200)
 st.sidebar.write(f"Logged in as: **{st.session_state.user_email}**")
 if st.sidebar.button("Logout"):
     supabase.auth.sign_out()
@@ -520,7 +521,7 @@ sl_atr_mult = st.sidebar.number_input(
 
 st.sidebar.caption(f"Current threshold = {class_threshold:.2f}")
 
-st.title("🤖 AI Momentum Predictor")
+st.title("🤖 Tick Sniper Momentum Predictor")
 user = supabase.auth.get_user()
 st.write("Authenticated user:", user.user.email if user and user.user else "None")
 
