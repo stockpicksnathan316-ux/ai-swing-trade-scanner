@@ -394,28 +394,15 @@ if not st.session_state.user_email:
     st.stop()
 
 # ------------------- After login: show user info & logout -------------------
-# ========== DEBUG BLOCK ==========
-st.sidebar.write("### 🔍 Debug Info")
-st.sidebar.write(f"Current working dir: {os.getcwd()}")
-st.sidebar.write(f"Script location: {os.path.dirname(os.path.abspath(__file__))}")
 
-files = os.listdir('.')
-st.sidebar.write(f"Files in current dir: {files}")
+# Logo with robust path (works locally and on Streamlit Cloud)
+from pathlib import Path
 
-logo_lower = "tick_sniper_final_logo.png"
-found = [f for f in files if f.lower() == logo_lower]
-if found:
-    st.sidebar.write(f"Found possible match: {found}")
-    st.sidebar.write(f"Exact case match? {found[0] == 'Tick_sniper_final_logo.png'}")
+logo_path = Path(__file__).parent / "Tick_sniper_final_logo.png"
+if logo_path.exists():
+    st.sidebar.image(str(logo_path), width=200)
 else:
-    st.sidebar.write("❌ No file matching that name (case-insensitive) found.")
-
-exact_path = "Tick_sniper_final_logo.png"
-st.sidebar.write(f"Exact file exists? {os.path.exists(exact_path)}")
-# ========== END DEBUG ==========
-
-# Original line – COMMENTED OUT to prevent crash
-# st.sidebar.image("Tick_sniper_final_logo.png", width=200)
+    st.sidebar.markdown("## 🎯 Tick Sniper")
 st.sidebar.write(f"Logged in as: **{st.session_state.user_email}**")
 if st.sidebar.button("Logout"):
     supabase.auth.sign_out()
