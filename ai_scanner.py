@@ -927,7 +927,7 @@ if scan_single:
 
         # Find which bin the current prediction falls into
         current_bin = pd.cut([current_prob], bins=bins, labels=labels, include_lowest=True)[0]
-        if current_bin is not None:
+        if current_bin is not None and current_bin in bin_count.index:
             bin_trades = bin_count[current_bin]
             if bin_trades >= MIN_TRADES_FOR_CALIBRATION:
                 calibrated = bin_win_rate[current_bin]
@@ -935,7 +935,8 @@ if scan_single:
                 calibrated = current_prob
                 st.warning(f"⚠️ Only {bin_trades} trades in bin {current_bin}. Using raw probability ({current_prob:.1%}) instead of calibrated win rate.")
         else:
-            calibrated = None
+            calibrated = current_prob
+            st.warning(f"⚠️ Could not find bin for probability {current_prob:.1%}. Using raw probability.")
 
         # Store the calibrated value in the results dictionary
         res['live_prob_cal'] = calibrated
