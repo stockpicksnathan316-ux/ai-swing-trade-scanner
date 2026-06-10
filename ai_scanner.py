@@ -1047,12 +1047,21 @@ if st.session_state.single_ticker_results is not None:
             current_prob = res['live_prob']
 
         current_bin = pd.cut([current_prob], bins=bins, labels=labels, include_lowest=True)[0]
-        if current_bin is not None:
+        if current_bin is not None and current_bin in bin_win_rate.index:
             win_rate_for_bin = bin_win_rate[current_bin]
-            # Add this to res so metrics row can use it
-            res['live_prob_cal'] = win_rate_for_bin
+            st.info(
+                f"📊 **Current prediction ({current_prob:.1%})** falls into bin **{current_bin}**.\n\n"
+                f"Historically, signals in this bin had a **win rate of {win_rate_for_bin:.1%}**."
+            )
+            if alpha == 0:
+                st.session_state.calibration = {
+                    'bins': bins,
+                    'win_rates': bin_win_rate.values,
+                    'current_bin': current_bin,
+                    'calibrated_prob': win_rate_for_bin
+                }
         else:
-            res['live_prob_cal'] = None
+            st.info(f"Current probability {current_prob:.1%} is outside the bins or no historical trades in that bin.")
 
         # --- Backtest expander ---
         with st.expander("📈 Backtest Performance (out‑of‑sample)"):
