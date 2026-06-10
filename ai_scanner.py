@@ -936,6 +936,10 @@ if scan_single:
                 st.warning(f"⚠️ Only {bin_trades} trades in bin {current_bin}. Using raw probability ({current_prob:.1%}) instead of calibrated win rate.")
         else:
             calibrated = current_prob
+            st.warning(f"⚠️ No historical trades for probability bin {current_bin}. Using raw probability ({current_prob:.1%}).")
+
+        else:
+            calibrated = current_prob
             st.warning(f"⚠️ Could not find bin for probability {current_prob:.1%}. Using raw probability.")
 
         # Store the calibrated value in the results dictionary
