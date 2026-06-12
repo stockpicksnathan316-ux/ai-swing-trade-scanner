@@ -1329,7 +1329,7 @@ if st.session_state.single_ticker_results is not None:
                     st.error("DEBUG: display_df is not defined – falling back to raw data")
                     st.dataframe(surprise_df[['Reported EPS', 'Estimate', 'Surprise']], use_container_width=True)
                 else:
-                    styled_df = display_df.style.applymap(color_surprise, subset=['Surprise'])
+                    styled_df = display_df.style.map(color_surprise, subset=['Surprise'])
                     st.dataframe(styled_df, use_container_width=True)
             else:
                 # Fallback: show simple EPS from quarterly_eps if available
