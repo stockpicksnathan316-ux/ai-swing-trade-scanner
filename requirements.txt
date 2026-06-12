@@ -15,3 +15,4 @@ supabase
 Authlib
 gunicorn
 lxml
+yfinance==0.2.40
