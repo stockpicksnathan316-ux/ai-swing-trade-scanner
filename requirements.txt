@@ -14,3 +14,4 @@ requests
 supabase
 Authlib
 gunicorn
+lxml

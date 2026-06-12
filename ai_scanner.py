@@ -1287,19 +1287,65 @@ if st.session_state.single_ticker_results is not None:
                 df_num = pd.DataFrame(list(num_metrics.items()), columns=['Metric', 'Value'])
                 st.dataframe(df_num)
 
-            # Inside the durability expander, after showing the grade and details
+            # Display quarterly earnings with surprise (beat/miss)
             quarterly_eps = adv.get('quarterly_eps')
+            earnings_surprise = adv.get('earnings_surprise')
+            
             if quarterly_eps is not None and not quarterly_eps.empty:
-                st.subheader("📈 Quarterly EPS (last 8 quarters)")
-                # Convert to DataFrame for display
+                st.subheader("📈 Quarterly Earnings (last 8 quarters)")
+                
+                # Base DataFrame with actual EPS
                 eps_df = quarterly_eps.reset_index()
-                eps_df.columns = ['Date', 'EPS']
-                # Format EPS as dollar amounts
-                eps_df['EPS'] = eps_df['EPS'].apply(lambda x: f"${x:.2f}")
-                st.dataframe(eps_df, use_container_width=True)
-
-        else:
-            st.info(f"Insufficient financial data for {ticker}. Check that ticker symbol is correct and the company has at least 5 years of annual financial statements.")
+                eps_df.columns = ['Date', 'Actual EPS']
+                eps_df['Actual EPS'] = eps_df['Actual EPS'].apply(lambda x: f"${x:.2f}")
+                
+                if not earnings_surprise.empty:
+                    # Prepare surprise DataFrame
+                    surprise_df = earnings_surprise.reset_index()
+                    # Use the column names as returned by durability_advanced.py
+                    # Typically: ['Date', 'Actual EPS (reported)', 'Estimate', 'Surprise %']
+                    surprise_df.columns = ['Date', 'Actual EPS (reported)', 'Estimate', 'Surprise %']
+                    
+                    # Merge with eps_df (keep all dates from quarterly_eps)
+                    merged = pd.merge(eps_df, surprise_df[['Date', 'Estimate', 'Surprise %']], on='Date', how='left')
+                    
+                    # Format Estimate as dollar
+                    merged['Estimate'] = merged['Estimate'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
+                    
+                    # Create human-readable surprise only if 'Surprise %' column exists
+                    if 'Surprise %' in merged.columns:
+                        def format_surprise(val):
+                            if pd.isna(val):
+                                return "N/A"
+                            if val > 0:
+                                return f"🔺 +{val:.1f}% beat"
+                            elif val < 0:
+                                return f"🔻 {val:.1f}% miss"
+                            else:
+                                return "✅ met"
+                        merged['Surprise'] = merged['Surprise %'].apply(format_surprise)
+                        display_df = merged[['Date', 'Actual EPS', 'Estimate', 'Surprise']]
+                        
+                        # Apply conditional styling to the Surprise column
+                        def color_surprise(val):
+                            if isinstance(val, str):
+                                if 'beat' in val:
+                                    return 'color: green'
+                                elif 'miss' in val:
+                                    return 'color: red'
+                                elif 'met' in val:
+                                    return 'color: gray'
+                            return ''
+                        styled_df = display_df.style.applymap(color_surprise, subset=['Surprise'])
+                        st.dataframe(styled_df, use_container_width=True)
+                    else:
+                        st.dataframe(eps_df, use_container_width=True)
+                        st.info("Earnings estimate data is incomplete (missing surprise percentage).")
+                else:
+                    st.dataframe(eps_df, use_container_width=True)
+                    st.info("Earnings estimate data not available for this stock.")
+            else:
+                st.info("Quarterly EPS data not available.")
 
     # --- Feature importance (optional) ---
     if st.checkbox("Show what XGBoost learned"):

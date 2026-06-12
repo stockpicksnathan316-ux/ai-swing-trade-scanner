@@ -1,7 +1,8 @@
 """
 durability_advanced.py - Full Stock Health Assessment (Durable Competitive Advantage)
 Now with aggressive field name fallbacks, computed gross profit, quarterly fallback,
-improved shares fallback, guarded dep_high, and quarterly EPS extraction.
+improved shares fallback, guarded dep_high, quarterly EPS extraction,
+and earnings surprise (beat/miss) data.
 """
 
 import yfinance as yf
@@ -193,7 +194,6 @@ def analyze_company(ticker: str):
                         bal_q = ticker_obj.quarterly_balance_sheet
                         shares = bal_q.loc['Common Stock Shares Outstanding'] if bal_q is not None and 'Common Stock Shares Outstanding' in bal_q.index else pd.Series(dtype=float)
                         if not shares.empty:
-                            # Align indices
                             common_idx = net_income.index.intersection(shares.index)
                             if len(common_idx) > 0:
                                 eps_computed = net_income[common_idx] / shares[common_idx]
@@ -203,6 +203,21 @@ def analyze_company(ticker: str):
     
     if quarterly_eps.empty:
         st.warning(f"No quarterly EPS data available for {ticker} after all methods.")
+    
+    # ----- NEW: Earnings surprise (beat / miss) using get_earnings_dates -----
+    earnings_surprise = pd.DataFrame()
+    try:
+        earnings_dates = ticker_obj.get_earnings_dates(limit=8)
+        if earnings_dates is not None and not earnings_dates.empty:
+            # Check required columns
+            if 'eps_estimate' in earnings_dates.columns and 'eps_actual' in earnings_dates.columns:
+                earnings_dates['surprise_pct'] = ((earnings_dates['eps_actual'] - earnings_dates['eps_estimate']) / earnings_dates['eps_estimate'].abs()) * 100
+                earnings_dates = earnings_dates[['eps_actual', 'eps_estimate', 'surprise_pct']]
+                earnings_dates.index = pd.to_datetime(earnings_dates.index)
+                earnings_dates = earnings_dates.sort_index()  # oldest first
+                earnings_surprise = earnings_dates.iloc[-8:]   # last 8 quarters
+    except Exception as e:
+        st.warning(f"Could not fetch earnings surprise data for {ticker}: {e}")
     
     # Operating profit consistency: take last 3 non‑null values
     op_series = get_series_safe(inc_annual, ['Operating Income', 'EBIT', 'Operating Profit']).dropna()
@@ -316,7 +331,8 @@ def analyze_company(ticker: str):
         'capex_10y': capex_10y_ratio,
         'revenue_series': pd.Series(),
         'net_income_series': net_income_series,
-        'quarterly_eps': quarterly_eps,   # <-- NEW: quarterly EPS series (last 8)
+        'quarterly_eps': quarterly_eps,                 # actual EPS series
+        'earnings_surprise': earnings_surprise,        # NEW: DataFrame with estimates & surprises
     }
     return metrics
 
@@ -558,5 +574,6 @@ def get_advanced_durability(ticker: str):
         'weak_count': weak,
         'details': details,
         'metrics': metrics,
-        'quarterly_eps': metrics.get('quarterly_eps', pd.Series(dtype=float))  # include quarterly EPS
+        'quarterly_eps': metrics.get('quarterly_eps', pd.Series(dtype=float)),
+        'earnings_surprise': metrics.get('earnings_surprise', pd.DataFrame())  # NEW
     }
