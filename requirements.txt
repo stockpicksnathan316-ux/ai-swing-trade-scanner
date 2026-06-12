@@ -1,5 +1,5 @@
 streamlit
-yfinance==0.2.40
+yfinance
 plotly
 pandas
 xgboost
