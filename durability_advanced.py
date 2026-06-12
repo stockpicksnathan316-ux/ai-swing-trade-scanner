@@ -204,18 +204,28 @@ def analyze_company(ticker: str):
     if quarterly_eps.empty:
         st.warning(f"No quarterly EPS data available for {ticker} after all methods.")
     
-    # ----- NEW: Earnings surprise (beat / miss) using get_earnings_dates -----
+    # ----- Earnings surprise (beat / miss) using get_earnings_dates -----
     earnings_surprise = pd.DataFrame()
     try:
         earnings_dates = ticker_obj.get_earnings_dates(limit=8)
         if earnings_dates is not None and not earnings_dates.empty:
-            # Check required columns
-            if 'eps_estimate' in earnings_dates.columns and 'eps_actual' in earnings_dates.columns:
-                earnings_dates['surprise_pct'] = ((earnings_dates['eps_actual'] - earnings_dates['eps_estimate']) / earnings_dates['eps_estimate'].abs()) * 100
+            # Detect actual column names (case‑insensitive)
+            cols = {col.lower(): col for col in earnings_dates.columns}
+            eps_est_col = cols.get('eps estimate', None)
+            eps_act_col = cols.get('reported eps', None) or cols.get('eps actual', None)
+            surprise_col = cols.get('surprise(%)', None)
+            if eps_est_col and eps_act_col and surprise_col:
+                earnings_dates['eps_estimate'] = earnings_dates[eps_est_col]
+                earnings_dates['eps_actual'] = earnings_dates[eps_act_col]
+                earnings_dates['surprise_pct'] = earnings_dates[surprise_col]
                 earnings_dates = earnings_dates[['eps_actual', 'eps_estimate', 'surprise_pct']]
                 earnings_dates.index = pd.to_datetime(earnings_dates.index)
                 earnings_dates = earnings_dates.sort_index()  # oldest first
-                earnings_surprise = earnings_dates.iloc[-8:]   # last 8 quarters
+                earnings_surprise = earnings_dates.iloc[-8:]
+            else:
+                st.warning(f"Could not find required columns in earnings data for {ticker}. Found: {list(earnings_dates.columns)}")
+        else:
+            st.info(f"No earnings dates data for {ticker}")
     except Exception as e:
         st.warning(f"Could not fetch earnings surprise data for {ticker}: {e}")
     
