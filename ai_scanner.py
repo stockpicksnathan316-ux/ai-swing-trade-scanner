@@ -1311,6 +1311,7 @@ if st.session_state.single_ticker_results is not None:
                     else:
                         return "✅ met"
                 surprise_df['Surprise'] = surprise_df['Surprise %'].apply(format_surprise)
+                
                 display_df = surprise_df[['Reported EPS', 'Estimate', 'Surprise']]
                 
                 def color_surprise(val):
@@ -1322,8 +1323,12 @@ if st.session_state.single_ticker_results is not None:
                         elif 'met' in val:
                             return 'color: gray'
                     return ''
-                # Only style if display_df exists
-                if display_df is not None:
+                
+                # DEBUG: check if display_df exists
+                if 'display_df' not in locals():
+                    st.error("DEBUG: display_df is not defined – falling back to raw data")
+                    st.dataframe(surprise_df[['Reported EPS', 'Estimate', 'Surprise']], use_container_width=True)
+                else:
                     styled_df = display_df.style.applymap(color_surprise, subset=['Surprise'])
                     st.dataframe(styled_df, use_container_width=True)
             else:
