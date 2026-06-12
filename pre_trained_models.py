@@ -12,13 +12,12 @@ import lightgbm as lgb
 from ta import add_all_ta_features
 import feature_engineering as fe
 import logging
-from datetime import datetime
 
+# Setup logging
 log_filename = f"pre_train_{datetime.now().strftime('%Y%m%d')}.log"
 logging.basicConfig(filename=log_filename, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-                    
 # ------------------- Helper: safe technical indicators -------------------
 def safe_add_ta_features(df, min_rows=10):
     if df is None or len(df) < min_rows:
@@ -29,6 +28,7 @@ def safe_add_ta_features(df, min_rows=10):
         return df_ta
     except Exception as e:
         print(f"TA failed: {e}")
+        logging.warning(f"TA failed for df: {e}")
         return df
 
 # ------------------- Caching helpers -------------------
@@ -52,7 +52,8 @@ def is_model_fresh(ticker, max_age_hours=24):
 def get_stock_specific_model(ticker, df_basic, force_retrain=False):
     """
     Trains and caches the full ensemble model (XGB+RF+LGB) for a ticker.
-    This is the same function used in the main app.
+    Includes cleaning steps (inf replacement, float32 conversion, constant column removal)
+    to match the main app's logic.
     """
     model_path, features_path = get_stock_model_cache_path(ticker)
 
@@ -61,7 +62,7 @@ def get_stock_specific_model(ticker, df_basic, force_retrain=False):
         feature_cols = joblib.load(features_path)
         return model, feature_cols
 
-    # --- Train the model (same logic as alpha=0 branch) ---
+    # --- Train the model with cleaning ---
     df = df_basic.copy()
     df['future_close'] = df['Close'].shift(-5)
     df['target'] = (df['future_close'] > df['Close']).astype(int)
@@ -72,6 +73,23 @@ def get_stock_specific_model(ticker, df_basic, force_retrain=False):
 
     X = df_clean[feature_columns]
     y = df_clean['target']
+
+    # ---------- CLEANING (identical to main app) ----------
+    # Replace inf, fill NaN, convert to float32
+    X = X.replace([np.inf, -np.inf], 0.0)
+    X = X.fillna(0.0)
+    X = X.astype(np.float32)
+
+    # Clean y: ensure integer
+    y = y.fillna(0).astype(int)
+
+    # Drop constant columns (they can cause XGBoost to fail)
+    constant_cols = [col for col in X.columns if X[col].nunique() <= 1]
+    if constant_cols:
+        X = X.drop(columns=constant_cols)
+        # Update feature_columns to match the remaining columns
+        feature_columns = X.columns.tolist()
+    # ---------------------------------------------
 
     split_idx = int(len(df_clean) * 0.8)
     X_train = X.iloc[:split_idx]
@@ -105,6 +123,7 @@ def get_stock_specific_model(ticker, df_basic, force_retrain=False):
     # Save model and feature columns
     joblib.dump(ensemble_model, model_path)
     joblib.dump(feature_columns, features_path)
+
     return ensemble_model, feature_columns
 
 # ------------------- Macro data for basic features -------------------
@@ -132,6 +151,7 @@ if __name__ == "__main__":
     tickers_df = pd.read_csv('tickers.csv')
     tickers = tickers_df['Symbol'].tolist()
     print(f"Pre‑training models for {len(tickers)} tickers...")
+    logging.info(f"Starting pre-training for {len(tickers)} tickers")
 
     # Get basic macro data (VIX, TNX, CL)
     basic_macro_df = get_basic_macro_data("1y")
@@ -143,6 +163,7 @@ if __name__ == "__main__":
             df = yf.download(ticker, period="1y", progress=False)
             if df.empty:
                 print(f"  No data for {ticker}, skipping.")
+                logging.warning(f"No data for {ticker}")
                 continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
@@ -156,7 +177,10 @@ if __name__ == "__main__":
             # Train and cache the stock‑specific model
             get_stock_specific_model(ticker, df_basic, force_retrain=True)
             print(f"  Done.")
+            logging.info(f"Successfully trained model for {ticker}")
         except Exception as e:
             print(f"  Error: {e}")
+            logging.error(f"Error training {ticker}: {e}")
 
     print("Pre‑training complete.")
+    logging.info("Pre‑training complete.")
