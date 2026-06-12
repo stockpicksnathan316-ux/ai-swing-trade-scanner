@@ -1,5 +1,5 @@
 streamlit
-yfinance
+yfinance==0.2.40
 plotly
 pandas
 xgboost
@@ -15,4 +15,3 @@ supabase
 Authlib
 gunicorn
 lxml
-yfinance==0.2.40
