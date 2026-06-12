@@ -1292,8 +1292,6 @@ if st.session_state.single_ticker_results is not None:
             
             if earnings_surprise is not None and not earnings_surprise.empty:
                 st.subheader("📈 Quarterly Earnings (last 8 quarters)")
-                
-                # Prepare the DataFrame for display
                 surprise_df = earnings_surprise.copy()
                 # Rename columns for readability
                 surprise_df.rename(columns={
@@ -1301,11 +1299,9 @@ if st.session_state.single_ticker_results is not None:
                     'eps_estimate': 'Estimate',
                     'surprise_pct': 'Surprise %'
                 }, inplace=True)
-                
                 # Format EPS as dollar
                 surprise_df['Reported EPS'] = surprise_df['Reported EPS'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
                 surprise_df['Estimate'] = surprise_df['Estimate'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
-                
                 # Create human-readable surprise with emoji
                 def format_surprise(val):
                     if pd.isna(val):
@@ -1317,10 +1313,8 @@ if st.session_state.single_ticker_results is not None:
                     else:
                         return "✅ met"
                 surprise_df['Surprise'] = surprise_df['Surprise %'].apply(format_surprise)
-                
                 # Select and order columns
                 display_df = surprise_df[['Reported EPS', 'Estimate', 'Surprise']]
-                
                 # Apply conditional styling to the Surprise column
                 def color_surprise(val):
                     if isinstance(val, str):
