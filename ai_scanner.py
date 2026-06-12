@@ -1320,7 +1320,6 @@ if st.session_state.single_ticker_results is not None:
                 
                 # Select and order columns
                 display_df = surprise_df[['Reported EPS', 'Estimate', 'Surprise']]
-                # Keep the date as index (already in the DataFrame)
                 
                 # Apply conditional styling to the Surprise column
                 def color_surprise(val):
