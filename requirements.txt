@@ -15,4 +15,3 @@ supabase
 Authlib
 gunicorn
 lxml
-flask-cors
