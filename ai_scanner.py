@@ -639,7 +639,7 @@ if st.button("📈 Upgrade to Pro ($20/month)"):
             mode='subscription',
             success_url=base_url + "?stripe_session_id={CHECKOUT_SESSION_ID}",
             cancel_url=base_url + "?payment=cancelled",
-            customer_email=st.session_state.user_email
+            customer_email=st.session_state.user_email,
             client_reference_id=client_reference_id
         )
         st.session_state.checkout_url = checkout_session.url
