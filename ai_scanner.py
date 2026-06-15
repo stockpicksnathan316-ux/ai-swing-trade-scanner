@@ -397,10 +397,10 @@ if not st.session_state.user_email:
 if st.session_state.user_email:
     # Get UTM params from URL
     query_params = st.query_params
-    utm_source = query_params.get('utm_source', [''])[0]
-    utm_medium = query_params.get('utm_medium', [''])[0]
-    utm_campaign = query_params.get('utm_campaign', [''])[0]
-    ref = query_params.get('ref', [''])[0]
+    utm_source = query_params.get('utm_source', [''])
+    utm_medium = query_params.get('utm_medium', [''])
+    utm_campaign = query_params.get('utm_campaign', [''])
+    ref = query_params.get('ref', [''])
     
     # Only store if at least one UTM param is present and we haven't stored for this session yet
     if any([utm_source, utm_medium, utm_campaign, ref]) and not st.session_state.get('utm_stored', False):
