@@ -630,6 +630,8 @@ else:
 # ------------------- Upgrade button -------------------
 if st.button("📈 Upgrade to Pro ($20/month)"):
     try:
+        client_reference_id = st.session_state.user_email
+        
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
