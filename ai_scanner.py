@@ -393,6 +393,31 @@ if not st.session_state.user_email:
     # IMPORTANT: Stop the app here if not logged in
     st.stop()
 
+# After login, capture UTM parameters if not already stored
+if st.session_state.user_email:
+    # Get UTM params from URL
+    query_params = st.query_params
+    utm_source = query_params.get('utm_source', [''])[0]
+    utm_medium = query_params.get('utm_medium', [''])[0]
+    utm_campaign = query_params.get('utm_campaign', [''])[0]
+    ref = query_params.get('ref', [''])[0]
+    
+    # Only store if at least one UTM param is present and we haven't stored for this session yet
+    if any([utm_source, utm_medium, utm_campaign, ref]) and not st.session_state.get('utm_stored', False):
+        try:
+            supabase.table('user_acquisitions').upsert({
+                'email': st.session_state.user_email,
+                'utm_source': utm_source,
+                'utm_medium': utm_medium,
+                'utm_campaign': utm_campaign,
+                'ref': ref,
+                'updated_at': datetime.now().isoformat()
+            }, on_conflict='email').execute()
+            st.session_state.utm_stored = True
+            st.sidebar.success(f"✅ Tracked source: {utm_source or 'direct'}")
+        except Exception as e:
+            st.sidebar.error(f"UTM storage failed: {e}")
+
 # ------------------- After login: show user info & logout -------------------
 
 # Logo with robust path (works locally and on Streamlit Cloud)
@@ -615,6 +640,7 @@ if st.button("📈 Upgrade to Pro ($20/month)"):
             success_url=base_url + "?stripe_session_id={CHECKOUT_SESSION_ID}",
             cancel_url=base_url + "?payment=cancelled",
             customer_email=st.session_state.user_email
+            client_reference_id=client_reference_id
         )
         st.session_state.checkout_url = checkout_session.url
         st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
