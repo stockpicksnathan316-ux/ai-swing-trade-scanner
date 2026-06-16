@@ -414,7 +414,6 @@ if st.session_state.user_email:
                 'updated_at': datetime.now().isoformat()
             }, on_conflict='email').execute()
             st.session_state.utm_stored = True
-            st.sidebar.success(f"✅ Tracked source: {utm_source or 'direct'}")
         except Exception as e:
             st.sidebar.error(f"UTM storage failed: {e}")
 
