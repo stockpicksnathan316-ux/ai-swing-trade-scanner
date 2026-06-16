@@ -1419,7 +1419,6 @@ if st.session_state.single_ticker_results is not None:
                     "model_type": model_type
                 }, on_conflict="user_email, ticker").execute()
                 st.success("Alert added! You'll receive an email when the probability meets your threshold.")
-                st.rerun()
             except Exception as e:
                 st.error(f"Error adding alert: {e}")
 
