@@ -1401,7 +1401,7 @@ if st.session_state.single_ticker_results is not None:
             model_type = "hybrid"
 
         # --- Watch this stock button ---
-        if st.button("🔔 Watch this stock"):
+        if st.button("🔔 Watch this stock", key="watch_stock_btn"):
             # Determine model_type based on alpha
             if alpha == 0:
                 model_type = "old"
