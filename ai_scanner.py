@@ -1390,40 +1390,45 @@ if st.session_state.single_ticker_results is not None:
                           margin=dict(l=150))
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Watch this stock button ---
-    if st.button("🔔 Watch this stock"):
-        # Determine model_type based on alpha
+    # --- Watch this stock button (debug version) ---
+    if st.button("🔔 Watch this stock", key="watch_stock_btn"):
+        st.write("### Debug: Button clicked")  # Temporary debug
+        st.write(f"User email: {st.session_state.user_email}")
+        st.write(f"Ticker: {ticker}")
+        st.write(f"Alpha: {alpha}")
+        st.write(f"Threshold: {class_threshold}")
+    
+        # Determine model_type
         if alpha == 0:
             model_type = "old"
         elif alpha == 1:
             model_type = "pooled"
         else:
             model_type = "hybrid"
-
-        # --- Watch this stock button ---
-        if st.button("🔔 Watch this stock", key="watch_stock_btn"):
-            # Determine model_type based on alpha
-            if alpha == 0:
-                model_type = "old"
-            elif alpha == 1:
-                model_type = "pooled"
-            else:
-                model_type = "hybrid"
-
-            try:
-                supabase.table("user_alerts").upsert({
-                    "user_email": st.session_state.user_email,
-                    "ticker": ticker,
-                    "alpha": alpha,
-                    "threshold": class_threshold,
-                    "model_type": model_type
-                }, on_conflict="user_email, ticker").execute()
-                st.success("Alert added! You'll receive an email when the probability meets your threshold.")
-            except Exception as e:
-                st.error(f"Error adding alert: {e}")
-
-        else:
-            st.info("Click 'Run Analysis' to generate predictions and backtest.")
+    
+        st.write(f"Model type: {model_type}")
+    
+        # Prepare data
+        alert_data = {
+            "user_email": st.session_state.user_email,
+            "ticker": ticker,
+            "alpha": alpha,
+            "threshold": class_threshold,
+            "model_type": model_type
+        }
+        st.write("Data to upsert:", alert_data)
+    
+        try:
+            result = supabase.table("user_alerts").upsert(alert_data, on_conflict="user_email, ticker").execute()
+            st.write("Upsert result:", result)
+            st.success("Alert added! You'll receive an email when the probability meets your threshold.")
+            # Do NOT call st.rerun() here – let the user see the debug info
+        except Exception as e:
+            st.error(f"Error details: {e}")
+            st.write("Full error object:", e.__dict__ if hasattr(e, '__dict__') else str(e))
+    
+    else:
+        st.info("Click 'Run Analysis' to generate predictions and backtest.")
 
 
 # ------------------- MULTI‑TICKER SCREENER -------------------
