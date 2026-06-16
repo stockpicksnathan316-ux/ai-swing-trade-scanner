@@ -977,6 +977,33 @@ if scan_single:
     # Increment scan count if free user
     if not is_pro:
         increment_user_scans(st.session_state.user_email)
+    
+        # --- Upgrade prompt after 3 scans ---
+        scans_used = get_user_scans_used(st.session_state.user_email)
+        if scans_used >= 3:
+            st.warning("⚠️ **You've used 3 of your 5 free scans.**")
+            st.info("Upgrade to Pro now for unlimited scans, email alerts, and weekly earnings reports. Only $20/month.")
+        
+            if st.button("🚀 Upgrade to Pro", key="upgrade_prompt_btn"):
+                try:
+                    import stripe
+                    stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
+                    base_url = st.secrets.get("base_url", "http://localhost:8501")
+                    checkout_session = stripe.checkout.Session.create(
+                        payment_method_types=['card'],
+                        line_items=[{
+                            'price': st.secrets["stripe_price_id"],
+                            'quantity': 1,
+                        }],
+                        mode='subscription',
+                        success_url=base_url + "?stripe_session_id={CHECKOUT_SESSION_ID}",
+                        cancel_url=base_url + "?payment=cancelled",
+                        customer_email=st.session_state.user_email,
+                        client_reference_id=st.session_state.user_email
+                    )
+                    st.markdown(f"👉 [Click here to complete payment]({checkout_session.url})")
+                except Exception as e:
+                    st.error(f"Error creating checkout: {e}")
 
 # ------------------------------------------------------------------
 # Display results from session state (if any)
