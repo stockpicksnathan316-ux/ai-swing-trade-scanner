@@ -1423,8 +1423,8 @@ if st.session_state.single_ticker_results is not None:
             except Exception as e:
                 st.error(f"Error adding alert: {e}")
 
-else:
-    st.info("Click 'Run Analysis' to generate predictions and backtest.")
+        else:
+            st.info("Click 'Run Analysis' to generate predictions and backtest.")
 
 
 # ------------------- MULTI‑TICKER SCREENER -------------------
