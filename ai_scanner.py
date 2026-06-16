@@ -1400,15 +1400,28 @@ if st.session_state.single_ticker_results is not None:
         else:
             model_type = "hybrid"
 
-        supabase.table("user_alerts").upsert({
-            "user_email": st.session_state.user_email,
-            "ticker": ticker,
-            "alpha": alpha,
-            "threshold": class_threshold,
-            "model_type": model_type
-        }, on_conflict="user_email, ticker").execute()
-        st.success("Alert added! You'll receive an email when the probability meets your threshold.")
-        st.rerun()   # Force a rerun to update the dashboard immediately
+        # --- Watch this stock button ---
+        if st.button("🔔 Watch this stock"):
+            # Determine model_type based on alpha
+            if alpha == 0:
+                model_type = "old"
+            elif alpha == 1:
+                model_type = "pooled"
+            else:
+                model_type = "hybrid"
+
+            try:
+                supabase.table("user_alerts").upsert({
+                    "user_email": st.session_state.user_email,
+                    "ticker": ticker,
+                    "alpha": alpha,
+                    "threshold": class_threshold,
+                    "model_type": model_type
+                }, on_conflict="user_email, ticker").execute()
+                st.success("Alert added! You'll receive an email when the probability meets your threshold.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error adding alert: {e}")
 
 else:
     st.info("Click 'Run Analysis' to generate predictions and backtest.")
