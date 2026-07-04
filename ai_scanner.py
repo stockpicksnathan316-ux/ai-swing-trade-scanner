@@ -657,6 +657,8 @@ if "checkout_url" in st.session_state:
 
 # ------------------- MAIN APP (single ticker) -------------------
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
+ticker_upper = ticker.upper()
+st.session_state.ticker_upper = ticker_upper   # store uppercase for later use
 period = st.selectbox("Period", ["6mo", "1y", "2y"], index=1, key="main_period")
 
 # --- Single‑ticker scan button ---
@@ -681,9 +683,9 @@ if scan_single:
             st.stop()
 
     # ------------------- ANALYSIS BEGINS -------------------
-    df = yf.download(ticker, period=period, progress=False)
+    df = yf.download(ticker_upper, period=period, progress=False)  # use uppercase
     if df.empty:
-        st.error(f"❌ No data found for {ticker} for period {period}. Please try another ticker or period.")
+        st.error(f"❌ No data found for {ticker_upper} for period {period}. Please try another ticker or period.")
         st.stop()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
@@ -1323,7 +1325,7 @@ if st.session_state.single_ticker_results is not None:
     # ==================== DURABILITY ASSESSMENT ====================
     with st.expander("📊 Full Stock Health Assessment (Durable Competitive Advantage)"):
         from durability_advanced import get_advanced_durability
-        ticker = st.session_state.main_ticker
+        ticker = st.session_state.ticker_upper
         adv = get_advanced_durability(ticker)
         if adv and adv['grade'] != 'Insufficient Data':
             grade_color = {'A':'green','B':'lightgreen','C':'orange','D':'salmon','F':'red'}.get(adv['grade'], 'gray')
@@ -1590,10 +1592,25 @@ def scan_tickers_fallback(tickers, macro_sector_df, alpha, period, use_hybrid, p
                 prob_raw = pooled_model.predict_proba(latest_enhanced)[0][1]
 
                 if use_hybrid and 0 < alpha < 1:
-                    stock_model, stock_feature_cols = get_stock_specific_model(ticker, df_t_basic)
-                    latest_basic = df_t_basic[stock_feature_cols].fillna(0).iloc[[-1]]
-                    latest_basic = ensure_numeric(latest_basic)
-                    stock_prob = stock_model.predict_proba(latest_basic)[0][1]
+                    try:
+                        stock_model, stock_feature_cols = get_stock_specific_model(ticker, df_t_basic)
+                        # Check for missing columns
+                        missing = [col for col in stock_feature_cols if col not in df_t_basic.columns]
+                        if missing:
+                            st.warning(f"Missing columns for {ticker}: {missing[:5]}... using pooled only.")
+                            stock_prob = prob_raw   # fallback to pooled
+                        else:
+                            latest_basic = df_t_basic[stock_feature_cols].fillna(0).iloc[[-1]]
+                            latest_basic = ensure_numeric(latest_basic)
+                            # Ensure shape matches
+                            if latest_basic.shape[1] == len(stock_feature_cols):
+                                stock_prob = stock_model.predict_proba(latest_basic)[0][1]
+                            else:
+                                st.warning(f"Feature shape mismatch for {ticker}. Using pooled only.")
+                                stock_prob = prob_raw
+                    except Exception as e:
+                        st.warning(f"Stock model failed for {ticker}: {e}. Using pooled only.")
+                        stock_prob = prob_raw
                     prob_raw = alpha * prob_raw + (1 - alpha) * stock_prob
 
             else:
