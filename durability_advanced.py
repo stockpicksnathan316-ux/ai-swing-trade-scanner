@@ -286,7 +286,8 @@ def analyze_company(ticker: str):
         if earnings_dates is not None and not earnings_dates.empty:
             cols = {col.lower(): col for col in earnings_dates.columns}
             eps_est_col = cols.get('eps estimate', None)
-            eps_act_col = cols.get('reported eps', None) or cols.get('eps actual', None)
+            # Prefer 'eps' (often normalized), then 'eps actual', then 'reported eps'
+            eps_act_col = cols.get('eps', None) or cols.get('eps actual', None) or cols.get('reported eps', None)
             surprise_col = cols.get('surprise(%)', None)
             if eps_est_col and eps_act_col and surprise_col:
                 earnings_dates['eps_estimate'] = earnings_dates[eps_est_col]
