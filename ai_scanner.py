@@ -1335,17 +1335,19 @@ if st.session_state.single_ticker_results is not None:
             # Show ALL metrics in a clean table
             with st.expander("📋 Detailed Assessment Results (all metrics)", expanded=True):
                 df_details = pd.DataFrame(list(adv['details'].items()), columns=['Metric', 'Assessment'])
-                st.dataframe(df_details, use_container_width=True, height=400)
+                df_details['Assessment'] = df_details['Assessment'].astype(str)
+                st.dataframe(df_details, width='stretch', height=400)
             
             # Optional: show raw numeric metrics in a second expander
             with st.expander("🔢 Raw Numerical Metrics"):
                 num_metrics = {k: v for k, v in adv['metrics'].items() if not isinstance(v, pd.Series)}
                 df_num = pd.DataFrame(list(num_metrics.items()), columns=['Metric', 'Value'])
-                st.dataframe(df_num)
+                df_num['Value'] = df_num['Value'].astype(str)
+                st.dataframe(df_num, width='stretch')
 
             # Display quarterly earnings with surprise (beat/miss)
             earnings_surprise = adv.get('earnings_surprise')
-            
+
             if earnings_surprise is not None and not earnings_surprise.empty:
                 st.subheader("📈 Quarterly Earnings (last 8 quarters)")
                 surprise_df = earnings_surprise.copy()
@@ -1356,7 +1358,7 @@ if st.session_state.single_ticker_results is not None:
                 }, inplace=True)
                 surprise_df['Reported EPS'] = surprise_df['Reported EPS'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
                 surprise_df['Estimate'] = surprise_df['Estimate'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
-                
+    
                 def format_surprise(val):
                     if pd.isna(val):
                         return "N/A"
@@ -1367,9 +1369,9 @@ if st.session_state.single_ticker_results is not None:
                     else:
                         return "✅ met"
                 surprise_df['Surprise'] = surprise_df['Surprise %'].apply(format_surprise)
-                
+    
                 display_df = surprise_df[['Reported EPS', 'Estimate', 'Surprise']]
-                
+    
                 def color_surprise(val):
                     if isinstance(val, str):
                         if 'beat' in val:
@@ -1379,14 +1381,11 @@ if st.session_state.single_ticker_results is not None:
                         elif 'met' in val:
                             return 'color: gray'
                     return ''
-                
-                # DEBUG: check if display_df exists
-                if 'display_df' not in locals():
-                    st.error("DEBUG: display_df is not defined – falling back to raw data")
-                    st.dataframe(surprise_df[['Reported EPS', 'Estimate', 'Surprise']], use_container_width=True)
-                else:
-                    styled_df = display_df.style.map(color_surprise, subset=['Surprise'])
-                    st.dataframe(styled_df, use_container_width=True)
+    
+                # Convert all columns to string to fix Arrow serialization
+                display_df = display_df.astype(str)
+                styled_df = display_df.style.map(color_surprise, subset=['Surprise'])
+                st.dataframe(styled_df, width='stretch')   # <-- changed here
             else:
                 # Fallback: show simple EPS from quarterly_eps if available
                 quarterly_eps = adv.get('quarterly_eps')
@@ -1395,7 +1394,8 @@ if st.session_state.single_ticker_results is not None:
                     eps_df.columns = ['Date', 'Actual EPS']
                     eps_df['Actual EPS'] = eps_df['Actual EPS'].apply(lambda x: f"${x:.2f}")
                     st.subheader("📈 Quarterly EPS (last 8 quarters)")
-                    st.dataframe(eps_df, use_container_width=True)
+                    eps_df = eps_df.astype(str)   # <-- add this to ensure all strings
+                    st.dataframe(eps_df, width='stretch')   # <-- changed here
                     st.info("Earnings estimate data not available for this stock.")
                 else:
                     st.info("Quarterly earnings data not available.")
