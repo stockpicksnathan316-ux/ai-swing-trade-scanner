@@ -1225,8 +1225,7 @@ if st.session_state.single_ticker_results is not None:
                         'Win/Loss': trades_df['win'].map({True: 'Win', False: 'Loss'})
                     })
                     st.subheader("📊 Trade-by-Trade Breakdown (TP/SL exit)")
-                    st.dataframe(trade_table, width='stretch')
-
+                    st.dataframe(trade_table, use_container_width=True)
             
                     # --- Summary metrics ---
                     win_rate = trades_df['win'].mean()
@@ -1418,7 +1417,7 @@ if st.session_state.single_ticker_results is not None:
         fig.update_layout(yaxis={'categoryorder':'total ascending'},
                           height=400,
                           margin=dict(l=150))
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
     # --- Watch this stock button (debug version) ---
     if st.button("🔔 Watch this stock", key="watch_stock_btn"):
