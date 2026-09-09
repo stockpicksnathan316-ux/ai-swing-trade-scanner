@@ -1399,6 +1399,211 @@ if st.session_state.single_ticker_results is not None:
                     st.info("Earnings estimate data not available for this stock.")
                 else:
                     st.info("Quarterly earnings data not available.")
+    
+    # ==================== INTRINSIC VALUE & MARGIN OF SAFETY ====================
+    with st.expander("💰 Intrinsic Value & Margin of Safety (DCF)"):
+        # Import the valuation function
+        from valuation import calculate_intrinsic_value
+        
+        # Use the same ticker variable (ensure it's uppercase)
+        ticker = st.session_state.ticker_upper
+        
+        with st.spinner("Calculating intrinsic value..."):
+            val_data = calculate_intrinsic_value(ticker)
+        
+        if val_data.get('error'):
+            st.info(f"⚠️ {val_data['error']} – DCF valuation unavailable for this ticker.")
+        else:
+            # Display metrics
+            col1, col2, col3 = st.columns(3)
+            col1.metric("💎 Intrinsic Value", f"${val_data['intrinsic_value']:.2f}")
+            col2.metric("🎯 Target Price (30% MoS)", f"${val_data['max_buy_price']:.2f}")
+            col3.metric("📉 Current Price", f"${val_data['current_price']:.2f}")
+            
+            # Discount percentage
+            if val_data['discount_pct'] > 0:
+                st.metric("📊 Discount to Intrinsic Value", f"{val_data['discount_pct']:.1f}%")
+            else:
+                st.metric("📊 Premium to Intrinsic Value", f"{-val_data['discount_pct']:.1f}%")
+            
+            # Verdict with color
+            if val_data['verdict_color'] == "green":
+                st.success(val_data['verdict'])
+            elif val_data['verdict_color'] == "yellow":
+                st.warning(val_data['verdict'])
+            else:
+                st.error(val_data['verdict'])
+            
+            # Additional details (collapsible)
+            with st.expander("📐 Valuation Details"):
+                st.write(f"**Growth rate used:** {val_data['growth_rate']:.1%}")
+                st.write(f"**Discount rate:** 15.0%")
+                st.write(f"**Latest FCF:** ${val_data['latest_fcf']:,.0f}M")
+                st.write(f"**Terminal value (PV):** ${val_data['terminal_pv']:,.0f}M")
+                st.write(f"**Total discounted FCF (PV):** ${val_data['total_pv']:,.0f}M")
+                st.write(f"**Shares outstanding:** {val_data['shares_outstanding']:,.0f}")
+                
+                # Future projections table
+                st.write("**Projected FCF (years 1-10):**")
+                projection_df = pd.DataFrame({
+                    'Year': range(1, 11),
+                    'Projected FCF ($M)': val_data['projected_fcf'],
+                    'Present Value ($M)': val_data['pv_list']
+                })
+                st.dataframe(projection_df.style.format({
+                    'Projected FCF ($M)': '{:,.0f}',
+                    'Present Value ($M)': '{:,.0f}'
+                }))
+
+    # ==================== ADVANCED DCF VALUATION (Alpha Spread style) ====================
+    with st.expander("📊 Advanced DCF Valuation (Revenue-based)"):
+        from valuation import calculate_intrinsic_value_advanced, get_financial_metrics
+
+        # Fetch historical metrics for this ticker
+        metrics = get_financial_metrics(ticker)
+    
+        if 'error' in metrics:
+            st.info(f"⚠️ {metrics['error']} – Cannot load advanced DCF data.")
+        else:
+            # Compute default values from historical data
+            hist_growth = metrics.get('revenue_growth_hist')
+            if hist_growth is None or np.isnan(hist_growth):
+                hist_growth = 0.08  # fallback
+            else:
+                hist_growth = max(0.0, hist_growth)  # floor at 0%
+        
+            hist_margin = metrics.get('net_margin_hist')
+            if hist_margin is None or np.isnan(hist_margin):
+                hist_margin = 0.20
+            else:
+                hist_margin = max(0.0, hist_margin)
+        
+            hist_conversion = metrics.get('cash_conversion_hist')
+            if hist_conversion is None or np.isnan(hist_conversion):
+                hist_conversion = 1.0
+            else:
+                hist_conversion = max(0.0, hist_conversion)
+        
+            # Set default values for sliders
+            rev_growth_default = round(hist_growth * 100, 1)
+            net_margin_default = round(hist_margin * 100, 1)
+            cash_conv_default = round(hist_conversion * 100, 0)
+        
+            # Show historical reference
+            st.caption(
+                f"📊 Historical 5Y averages: "
+                f"Revenue growth {hist_growth:.1%}, "
+                f"Net margin {hist_margin:.1%}, "
+                f"Cash conversion {hist_conversion:.0%}"
+            )
+        
+            # User adjustable parameters
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                revenue_growth = st.number_input(
+                    "Revenue Growth (%)", 
+                    min_value=-10.0, max_value=30.0, 
+                    value=rev_growth_default, step=0.5
+                ) / 100.0
+                net_margin = st.number_input(
+                    "Net Margin (%)", 
+                    min_value=0.0, max_value=50.0, 
+                    value=net_margin_default, step=0.5
+                ) / 100.0
+            with col2:
+                cash_conversion = st.number_input(
+                    "Cash Conversion (%)", 
+                    min_value=0.0, max_value=200.0, 
+                    value=cash_conv_default, step=5.0
+                ) / 100.0
+                discount_rate = st.number_input(
+                    "Discount Rate (%)", 
+                    min_value=0.0, max_value=30.0, 
+                    value=8.8, step=0.5
+                ) / 100.0
+            with col3:
+                exit_multiple = st.number_input(
+                    "Exit Multiple (P/S)", 
+                    min_value=0.0, max_value=50.0, 
+                    value=5.0, step=0.5
+                )
+                forecast_years = st.slider(
+                    "Forecast Period (years)", 
+                    min_value=1, max_value=15, 
+                    value=5, step=1
+                )
+                margin_of_safety = st.slider(
+                    "Margin of Safety (%)", 
+                    min_value=0, max_value=50, 
+                    value=30, step=5
+                ) / 100.0
+
+            # Compute the advanced DCF
+            with st.spinner("Calculating advanced DCF..."):
+                adv = calculate_intrinsic_value_advanced(
+                    ticker,
+                    revenue_growth=revenue_growth,
+                    net_margin=net_margin,
+                    cash_conversion=cash_conversion,
+                    discount_rate=discount_rate,
+                    exit_multiple=exit_multiple,
+                    forecast_years=forecast_years,
+                    margin_of_safety=margin_of_safety
+                )
+
+            if adv.get('error'):
+                st.info(f"⚠️ {adv['error']} – Advanced DCF unavailable.")
+            else:
+                # Display results
+                col1, col2, col3 = st.columns(3)
+                col1.metric("💎 Intrinsic Value", f"${adv['intrinsic_value']:.2f}")
+                col2.metric("🎯 Target Price", f"${adv['max_buy_price']:.2f} (MoS {adv['margin_of_safety']:.0%})")
+                col3.metric("📉 Current Price", f"${adv['current_price']:.2f}")
+
+                if adv['discount_pct'] > 0:
+                    st.metric("📊 Discount to Intrinsic Value", f"{adv['discount_pct']:.1f}%")
+                else:
+                    st.metric("📊 Premium to Intrinsic Value", f"{-adv['discount_pct']:.1f}%")
+
+                # Verdict
+                if adv['verdict_color'] == "green":
+                    st.success(adv['verdict'])
+                elif adv['verdict_color'] == "yellow":
+                    st.warning(adv['verdict'])
+                else:
+                    st.error(adv['verdict'])
+
+                # Show detailed assumptions and projections
+                with st.expander("📐 Advanced DCF Details"):
+                    st.write(f"**Company:** {adv['company_name']} ({ticker})")
+                    st.write(f"**Latest Revenue:** ${adv['latest_revenue']:,.0f}M")
+                    st.write(f"**Net Cash:** ${adv['net_cash']:,.0f}M")
+                    st.write(f"**Shares Outstanding:** {adv['shares_outstanding']:,.0f}")
+                    st.write(f"**Revenue Growth (CAGR):** {adv['revenue_growth_used']:.1%}")
+                    st.write(f"**Net Margin:** {adv['net_margin_used']:.1%}")
+                    st.write(f"**Cash Conversion (FCFE/Net Income):** {adv['cash_conversion_used']:.0%}")
+                    st.write(f"**Discount Rate:** {adv['discount_rate_used']:.1%}")
+                    st.write(f"**Exit Multiple (P/S):** {adv['exit_multiple_used']:.1f}x")
+                    st.write(f"**Forecast Period:** {adv['forecast_years']} years")
+                    st.write(f"**Terminal Value (PV):** ${adv['pv_terminal']:,.0f}M")
+                    st.write(f"**Total PV of FCFE:** ${adv['total_pv_fcfe']:,.0f}M")
+                    st.write(f"**Enterprise Value:** ${adv['enterprise_value']:,.0f}M")
+                    st.write(f"**Equity Value:** ${adv['equity_value']:,.0f}M")
+
+                    # Projection table
+                    proj_df = pd.DataFrame({
+                        'Year': [f"Y{i+1}" for i in range(forecast_years)],
+                        'Revenue ($M)': [round(x, 0) for x in adv['revenue_projections']],
+                        'Net Income ($M)': [round(x, 0) for x in adv['net_income_projections']],
+                        'FCFE ($M)': [round(x, 0) for x in adv['fcfe_projections']],
+                        'PV FCFE ($M)': [round(x, 0) for x in adv['pv_fcfe']]
+                    })
+                    st.dataframe(proj_df.style.format({
+                        'Revenue ($M)': '{:,.0f}',
+                        'Net Income ($M)': '{:,.0f}',
+                        'FCFE ($M)': '{:,.0f}',
+                        'PV FCFE ($M)': '{:,.0f}'
+                    }))
 
     # --- Feature importance (optional) ---
     if st.checkbox("Show what XGBoost learned"):
