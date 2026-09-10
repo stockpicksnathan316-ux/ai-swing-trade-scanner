@@ -118,9 +118,9 @@ def calculate_intrinsic_value(ticker, projection_years=10, discount_rate=0.15, m
 # ------------------- Advanced DCF (Alpha Spread style) -------------------
 def get_financial_metrics(ticker):
     """
-    Fetch key financial metrics using TTM (trailing twelve months) data.
-    Returns a dict with TTM revenue, net income, FCF, shares, current price,
-    net cash, and historical growth rates.
+    Fetch key financial metrics using TTM (trailing twelve months) data,
+    plus forward estimates from stock.info.
+    Returns a dict with both historical and forward-looking metrics.
     """
     try:
         stock = yf.Ticker(ticker)
@@ -130,29 +130,46 @@ def get_financial_metrics(ticker):
         balance = stock.balance_sheet
         cashflow = stock.cashflow
 
-        # ----- TTM Revenue & Net Income (sum of last 4 quarters) -----
+        # ----- TTM Revenue (quarterly, annual, info fallback) -----
+        latest_revenue = None
         if income_quarterly is not None and not income_quarterly.empty:
-            # Get the last 4 quarters of revenue and net income
-            rev_q = income_quarterly.loc['Total Revenue'].iloc[:4] if 'Total Revenue' in income_quarterly.index else None
-            ni_q = income_quarterly.loc['Net Income'].iloc[:4] if 'Net Income' in income_quarterly.index else None
-            if rev_q is not None and len(rev_q) == 4:
-                latest_revenue = rev_q.sum()
-            else:
-                latest_revenue = income_annual.loc['Total Revenue'].iloc[0] if 'Total Revenue' in income_annual.index else None
-            if ni_q is not None and len(ni_q) == 4:
-                latest_net_income = ni_q.sum()
-            else:
-                latest_net_income = income_annual.loc['Net Income'].iloc[0] if 'Net Income' in income_annual.index else None
-        else:
-            # Fallback to annual
-            latest_revenue = income_annual.loc['Total Revenue'].iloc[0] if 'Total Revenue' in income_annual.index else None
-            latest_net_income = income_annual.loc['Net Income'].iloc[0] if 'Net Income' in income_annual.index else None
+            try:
+                rev_q = income_quarterly.loc['Total Revenue'].iloc[:4]
+                if len(rev_q) == 4:
+                    latest_revenue = rev_q.sum()
+            except:
+                pass
+        if latest_revenue is None or latest_revenue <= 0:
+            try:
+                latest_revenue = income_annual.loc['Total Revenue'].iloc[0]
+            except:
+                pass
+        if latest_revenue is None or latest_revenue <= 0:
+            latest_revenue = info.get('totalRevenue') or info.get('revenue') or 0
 
-        # ----- TTM Free Cash Flow (if available quarterly) -----
-        # yfinance quarterly cashflow may not have FCF directly; we can estimate from annual or use annual.
-        latest_fcf = cashflow.loc['Free Cash Flow'].iloc[0] if 'Free Cash Flow' in cashflow.index else None
+        # ----- TTM Net Income -----
+        latest_net_income = None
+        if income_quarterly is not None and not income_quarterly.empty:
+            try:
+                ni_q = income_quarterly.loc['Net Income'].iloc[:4]
+                if len(ni_q) == 4:
+                    latest_net_income = ni_q.sum()
+            except:
+                pass
+        if latest_net_income is None or latest_net_income <= 0:
+            try:
+                latest_net_income = income_annual.loc['Net Income'].iloc[0]
+            except:
+                pass
+        if latest_net_income is None or latest_net_income <= 0:
+            latest_net_income = info.get('netIncomeToCommon') or 0
 
-        # ----- Net Cash (most recent balance sheet) -----
+        # ----- Shares -----
+        shares = info.get('sharesOutstanding', 1)
+        if shares is None or shares <= 0:
+            shares = info.get('floatShares') or 1
+
+        # ----- Net Cash -----
         try:
             cash = balance.loc['Cash And Cash Equivalents'].iloc[0] if 'Cash And Cash Equivalents' in balance.index else 0
             short_term_debt = balance.loc['Short Term Debt'].iloc[0] if 'Short Term Debt' in balance.index else 0
@@ -162,11 +179,10 @@ def get_financial_metrics(ticker):
         except:
             net_cash = 0
 
-        # ----- Shares & Price -----
-        shares = info.get('sharesOutstanding', 1)
+        # ----- Current Price -----
         current_price = info.get('regularMarketPrice', 0)
 
-        # ----- Historical growth rates (5-year CAGR from annual data) -----
+        # ----- Historical growth rates (5-year CAGR) -----
         revenue_series = income_annual.loc['Total Revenue'] if 'Total Revenue' in income_annual.index else None
         net_income_series = income_annual.loc['Net Income'] if 'Net Income' in income_annual.index else None
         fcf_series = cashflow.loc['Free Cash Flow'] if 'Free Cash Flow' in cashflow.index else None
@@ -187,10 +203,16 @@ def get_financial_metrics(ticker):
         net_margin_hist = (net_income_series.iloc[0] / revenue_series.iloc[0]) if revenue_series is not None and net_income_series is not None else None
         cash_conversion_hist = (fcf_series.iloc[0] / net_income_series.iloc[0]) if fcf_series is not None and net_income_series is not None else None
 
+        # ----- Forward estimates from info -----
+        forward_rev_growth = info.get('revenueGrowth')  # e.g., 0.096 for AAPL
+        forward_net_margin = info.get('profitMargins')   # trailing margin, used as proxy
+        forward_earnings_growth = info.get('earningsGrowth')
+        current_ps_ratio = info.get('priceToSalesTrailing12Months')
+
         return {
             'latest_revenue': latest_revenue,
             'latest_net_income': latest_net_income,
-            'latest_fcf': latest_fcf,
+            'latest_fcf': fcf_series.iloc[0] if fcf_series is not None else None,
             'shares_outstanding': shares,
             'current_price': current_price,
             'net_cash': net_cash,
@@ -198,6 +220,11 @@ def get_financial_metrics(ticker):
             'net_margin_hist': net_margin_hist,
             'cash_conversion_hist': cash_conversion_hist,
             'company_name': info.get('longName', ticker),
+            # Forward-looking fields
+            'forward_revenue_growth': forward_rev_growth,
+            'forward_net_margin': forward_net_margin,
+            'forward_earnings_growth': forward_earnings_growth,
+            'current_ps_ratio': current_ps_ratio,
         }
     except Exception as e:
         return {'error': str(e)}

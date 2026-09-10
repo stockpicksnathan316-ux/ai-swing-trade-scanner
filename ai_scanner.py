@@ -1400,60 +1400,7 @@ if st.session_state.single_ticker_results is not None:
                 else:
                     st.info("Quarterly earnings data not available.")
     
-    # ==================== INTRINSIC VALUE & MARGIN OF SAFETY ====================
-    with st.expander("💰 Intrinsic Value & Margin of Safety (DCF)"):
-        # Import the valuation function
-        from valuation import calculate_intrinsic_value
-        
-        # Use the same ticker variable (ensure it's uppercase)
-        ticker = st.session_state.ticker_upper
-        
-        with st.spinner("Calculating intrinsic value..."):
-            val_data = calculate_intrinsic_value(ticker)
-        
-        if val_data.get('error'):
-            st.info(f"⚠️ {val_data['error']} – DCF valuation unavailable for this ticker.")
-        else:
-            # Display metrics
-            col1, col2, col3 = st.columns(3)
-            col1.metric("💎 Intrinsic Value", f"${val_data['intrinsic_value']:.2f}")
-            col2.metric("🎯 Target Price (30% MoS)", f"${val_data['max_buy_price']:.2f}")
-            col3.metric("📉 Current Price", f"${val_data['current_price']:.2f}")
-            
-            # Discount percentage
-            if val_data['discount_pct'] > 0:
-                st.metric("📊 Discount to Intrinsic Value", f"{val_data['discount_pct']:.1f}%")
-            else:
-                st.metric("📊 Premium to Intrinsic Value", f"{-val_data['discount_pct']:.1f}%")
-            
-            # Verdict with color
-            if val_data['verdict_color'] == "green":
-                st.success(val_data['verdict'])
-            elif val_data['verdict_color'] == "yellow":
-                st.warning(val_data['verdict'])
-            else:
-                st.error(val_data['verdict'])
-            
-            # Additional details (collapsible)
-            with st.expander("📐 Valuation Details"):
-                st.write(f"**Growth rate used:** {val_data['growth_rate']:.1%}")
-                st.write(f"**Discount rate:** 15.0%")
-                st.write(f"**Latest FCF:** ${val_data['latest_fcf']:,.0f}M")
-                st.write(f"**Terminal value (PV):** ${val_data['terminal_pv']:,.0f}M")
-                st.write(f"**Total discounted FCF (PV):** ${val_data['total_pv']:,.0f}M")
-                st.write(f"**Shares outstanding:** {val_data['shares_outstanding']:,.0f}")
-                
-                # Future projections table
-                st.write("**Projected FCF (years 1-10):**")
-                projection_df = pd.DataFrame({
-                    'Year': range(1, 11),
-                    'Projected FCF ($M)': val_data['projected_fcf'],
-                    'Present Value ($M)': val_data['pv_list']
-                })
-                st.dataframe(projection_df.style.format({
-                    'Projected FCF ($M)': '{:,.0f}',
-                    'Present Value ($M)': '{:,.0f}'
-                }))
+
 
     # ==================== ADVANCED DCF VALUATION (Alpha Spread style) ====================
     with st.expander("📊 Advanced DCF Valuation (Revenue-based)"):
@@ -1465,44 +1412,80 @@ if st.session_state.single_ticker_results is not None:
         if 'error' in metrics:
             st.info(f"⚠️ {metrics['error']} – Cannot load advanced DCF data.")
         else:
-            # Compute default values from historical data
+            # ----- Set defaults using forward estimates or historical averages -----
+        
+            # 1. Revenue Growth: forward if available, else historical
+            forward_growth = metrics.get('forward_revenue_growth')
             hist_growth = metrics.get('revenue_growth_hist')
-            if hist_growth is None or np.isnan(hist_growth):
-                hist_growth = 0.08  # fallback
+            if forward_growth is not None and forward_growth > 0:
+                rev_growth_default = round(forward_growth * 100, 1)
+                growth_source = "Wall Street"
+            elif hist_growth is not None and hist_growth > 0:
+                rev_growth_default = round(hist_growth * 100, 1)
+                growth_source = "Historical"
             else:
-                hist_growth = max(0.0, hist_growth)  # floor at 0%
-        
+                rev_growth_default = 8.0
+                growth_source = "Default"
+            # Clamp to allowed range (max 50.0)
+            rev_growth_default = max(-10.0, min(50.0, rev_growth_default))
+
+            # 2. Net Margin: forward (profitMargins) if available, else historical
+            forward_margin = metrics.get('forward_net_margin')
             hist_margin = metrics.get('net_margin_hist')
-            if hist_margin is None or np.isnan(hist_margin):
-                hist_margin = 0.20
+            if forward_margin is not None and forward_margin > 0:
+                net_margin_default = round(forward_margin * 100, 1)
+                margin_source = "Wall Street"
+            elif hist_margin is not None and hist_margin > 0:
+                net_margin_default = round(hist_margin * 100, 1)
+                margin_source = "Historical"
             else:
-                hist_margin = max(0.0, hist_margin)
-        
+                net_margin_default = 20.0
+                margin_source = "Default"
+            net_margin_default = max(0.0, min(50.0, net_margin_default))
+
+            # 3. Cash Conversion: always historical average
             hist_conversion = metrics.get('cash_conversion_hist')
-            if hist_conversion is None or np.isnan(hist_conversion):
-                hist_conversion = 1.0
+            if hist_conversion is not None and hist_conversion > 0:
+                cash_conv_default = round(hist_conversion * 100, 0)
             else:
-                hist_conversion = max(0.0, hist_conversion)
-        
-            # Set default values for sliders
-            rev_growth_default = round(hist_growth * 100, 1)
-            net_margin_default = round(hist_margin * 100, 1)
-            cash_conv_default = round(hist_conversion * 100, 0)
-        
-            # Show historical reference
+                cash_conv_default = 100.0
+            cash_conv_default = max(0.0, min(200.0, cash_conv_default))
+
+            # 4. Exit Multiple: use current P/S ratio if reasonable, else 5.0
+            ps_ratio = metrics.get('current_ps_ratio')
+            if ps_ratio is not None and 0.5 < ps_ratio < 20:
+                exit_multiple_default = round(ps_ratio, 1)
+                exit_source = "Current P/S"
+            else:
+                exit_multiple_default = 5.0
+                exit_source = "Default"
+            exit_multiple_default = max(0.0, min(50.0, exit_multiple_default))
+
+            # 5. Discount Rate: fixed at 8.8% (clamped to range)
+            discount_rate_default = 8.8
+            discount_rate_default = max(0.0, min(30.0, discount_rate_default))
+
+            # 6. Forecast Period: fixed at 5 years
+            forecast_years_default = 5
+
+            # Display the source of defaults
             st.caption(
-                f"📊 Historical 5Y averages: "
-                f"Revenue growth {hist_growth:.1%}, "
-                f"Net margin {hist_margin:.1%}, "
-                f"Cash conversion {hist_conversion:.0%}"
+                f"📊 **Defaults source:** Revenue growth from {growth_source}, "
+                f"Net margin from {margin_source}, Exit multiple from {exit_source}."
             )
-        
+
+            # Optionally show historical averages for reference
+            with st.expander("📈 Historical 5Y Averages (for reference)"):
+                st.write(f"Revenue growth: {hist_growth:.1%}" if hist_growth else "Revenue growth: N/A")
+                st.write(f"Net margin: {hist_margin:.1%}" if hist_margin else "Net margin: N/A")
+                st.write(f"Cash conversion: {hist_conversion:.0%}" if hist_conversion else "Cash conversion: N/A")
+
             # User adjustable parameters
             col1, col2, col3 = st.columns(3)
             with col1:
                 revenue_growth = st.number_input(
                     "Revenue Growth (%)", 
-                    min_value=-10.0, max_value=30.0, 
+                    min_value=-10.0, max_value=50.0,  # increased max to 50%
                     value=rev_growth_default, step=0.5
                 ) / 100.0
                 net_margin = st.number_input(
@@ -1519,18 +1502,18 @@ if st.session_state.single_ticker_results is not None:
                 discount_rate = st.number_input(
                     "Discount Rate (%)", 
                     min_value=0.0, max_value=30.0, 
-                    value=8.8, step=0.5
+                    value=discount_rate_default, step=0.5
                 ) / 100.0
             with col3:
                 exit_multiple = st.number_input(
                     "Exit Multiple (P/S)", 
                     min_value=0.0, max_value=50.0, 
-                    value=5.0, step=0.5
+                    value=exit_multiple_default, step=0.5
                 )
                 forecast_years = st.slider(
                     "Forecast Period (years)", 
                     min_value=1, max_value=15, 
-                    value=5, step=1
+                    value=forecast_years_default, step=1
                 )
                 margin_of_safety = st.slider(
                     "Margin of Safety (%)", 
@@ -1576,7 +1559,7 @@ if st.session_state.single_ticker_results is not None:
                 # Show detailed assumptions and projections
                 with st.expander("📐 Advanced DCF Details"):
                     st.write(f"**Company:** {adv['company_name']} ({ticker})")
-                    st.write(f"**Latest Revenue:** ${adv['latest_revenue']:,.0f}M")
+                    st.write(f"**Latest Revenue (TTM):** ${adv['latest_revenue']:,.0f}M")
                     st.write(f"**Net Cash:** ${adv['net_cash']:,.0f}M")
                     st.write(f"**Shares Outstanding:** {adv['shares_outstanding']:,.0f}")
                     st.write(f"**Revenue Growth (CAGR):** {adv['revenue_growth_used']:.1%}")
