@@ -35,3 +35,4 @@ stripe-webhook/"stock_model_*.pkl"
 "tick_sniper_cache/" 
 ai_backup_scanner_durability.py
 ai_scanner_complete_working_model.py
+sec_cache/ 
