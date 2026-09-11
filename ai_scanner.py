@@ -1405,122 +1405,165 @@ if st.session_state.single_ticker_results is not None:
     # ==================== ADVANCED DCF VALUATION (Alpha Spread style) ====================
     with st.expander("📊 Advanced DCF Valuation (Revenue-based)"):
         from valuation import calculate_intrinsic_value_advanced, get_financial_metrics
-
-        # Fetch historical metrics for this ticker
-        metrics = get_financial_metrics(ticker)
     
+        # Fetch metrics for this ticker
+        metrics = get_financial_metrics(ticker)
+        
         if 'error' in metrics:
             st.info(f"⚠️ {metrics['error']} – Cannot load advanced DCF data.")
         else:
-            # ----- Set defaults using forward estimates or historical averages -----
-        
-            # 1. Revenue Growth: forward if available, else historical
-            forward_growth = metrics.get('forward_revenue_growth')
+            # ----- Compute default values from metrics -----
+            
+            # 1. Revenue Growth: blend SEC historical (70%) with forward (30%)
             hist_growth = metrics.get('revenue_growth_hist')
-            if forward_growth is not None and forward_growth > 0:
-                rev_growth_default = round(forward_growth * 100, 1)
-                growth_source = "Wall Street"
-            elif hist_growth is not None and hist_growth > 0:
-                rev_growth_default = round(hist_growth * 100, 1)
-                growth_source = "Historical"
+            forward_growth = metrics.get('forward_revenue_growth')
+            if hist_growth and hist_growth > 0:
+                if forward_growth and forward_growth > 0:
+                    blended = 0.7 * hist_growth + 0.3 * forward_growth
+                    rev_growth_default = round(blended * 100, 1)
+                    growth_source = "Blend (70% Hist + 30% Fwd)"
+                else:
+                    rev_growth_default = round(hist_growth * 100, 1)
+                    growth_source = "SEC Historical 5Y CAGR"
             else:
                 rev_growth_default = 8.0
                 growth_source = "Default"
-            # Clamp to allowed range (max 50.0)
             rev_growth_default = max(-10.0, min(50.0, rev_growth_default))
-
-            # 2. Net Margin: forward (profitMargins) if available, else historical
-            forward_margin = metrics.get('forward_net_margin')
+    
+            # 2. Net Margin: blend SEC historical (70%) with forward (30%)
             hist_margin = metrics.get('net_margin_hist')
-            if forward_margin is not None and forward_margin > 0:
-                net_margin_default = round(forward_margin * 100, 1)
-                margin_source = "Wall Street"
-            elif hist_margin is not None and hist_margin > 0:
-                net_margin_default = round(hist_margin * 100, 1)
-                margin_source = "Historical"
+            forward_margin = metrics.get('forward_net_margin')
+            if hist_margin and hist_margin > 0:
+                if forward_margin and forward_margin > 0:
+                    blended = 0.7 * hist_margin + 0.3 * forward_margin
+                    net_margin_default = round(blended * 100, 1)
+                    margin_source = "Blend (70% Hist + 30% Fwd)"
+                else:
+                    net_margin_default = round(hist_margin * 100, 1)
+                    margin_source = "SEC Historical 5Y Avg"
             else:
                 net_margin_default = 20.0
                 margin_source = "Default"
             net_margin_default = max(0.0, min(50.0, net_margin_default))
-
-            # 3. Cash Conversion: always historical average
+    
+            # 3. Cash Conversion: latest historical
             hist_conversion = metrics.get('cash_conversion_hist')
             if hist_conversion is not None and hist_conversion > 0:
                 cash_conv_default = round(hist_conversion * 100, 0)
             else:
                 cash_conv_default = 100.0
             cash_conv_default = max(0.0, min(200.0, cash_conv_default))
-
-            # 4. Exit Multiple: use current P/S ratio if reasonable, else 5.0
-            ps_ratio = metrics.get('current_ps_ratio')
-            if ps_ratio is not None and 0.5 < ps_ratio < 20:
-                exit_multiple_default = round(ps_ratio, 1)
-                exit_source = "Current P/S"
-            else:
-                exit_multiple_default = 5.0
-                exit_source = "Default"
-            exit_multiple_default = max(0.0, min(50.0, exit_multiple_default))
-
-            # 5. Discount Rate: fixed at 8.8% (clamped to range)
+    
+            # 4. Exit Multiple: fixed conservative default (users can adjust)
+            exit_multiple_default = 5.5
+            exit_source = "Default (mature-stage)"
+    
+            # 5. Discount Rate: 8.8% default (matches Alpha Spread's convention)
             discount_rate_default = 8.8
+            discount_source = "Default (8.8%)"
             discount_rate_default = max(0.0, min(30.0, discount_rate_default))
-
+    
             # 6. Forecast Period: fixed at 5 years
             forecast_years_default = 5
-
-            # Display the source of defaults
+    
+            # ----- Set session state defaults if not already present -----
+            if 'rev_growth_input' not in st.session_state:
+                st.session_state.rev_growth_input = rev_growth_default
+            if 'net_margin_input' not in st.session_state:
+                st.session_state.net_margin_input = net_margin_default
+            if 'cash_conv_input' not in st.session_state:
+                st.session_state.cash_conv_input = cash_conv_default
+            if 'discount_rate_input' not in st.session_state:
+                st.session_state.discount_rate_input = discount_rate_default
+            if 'exit_multiple_input' not in st.session_state:
+                st.session_state.exit_multiple_input = exit_multiple_default
+            if 'forecast_years_input' not in st.session_state:
+                st.session_state.forecast_years_input = forecast_years_default
+    
+            # ----- Display source captions -----
             st.caption(
                 f"📊 **Defaults source:** Revenue growth from {growth_source}, "
-                f"Net margin from {margin_source}, Exit multiple from {exit_source}."
+                f"Net margin from {margin_source}, Exit multiple from {exit_source}, "
+                f"Discount rate from {discount_source}."
             )
-
-            # Optionally show historical averages for reference
+    
+            # ----- "Match Alpha Spread Base Case" button -----
+            if st.button("🎯 Match Alpha Spread Base Case (if available)"):
+                alphaspread_base = {
+                    'AAPL': {'rev_growth': 9.6, 'net_margin': 26.2, 'cash_conv': 101.0, 'discount': 8.8, 'exit_mult': 5.7, 'forecast': 5},
+                    'MSFT': {'rev_growth': 12.0, 'net_margin': 36.0, 'cash_conv': 95.0, 'discount': 8.5, 'exit_mult': 8.0, 'forecast': 5},
+                    'META': {'rev_growth': 15.3, 'net_margin': 29.5, 'cash_conv': 105.0, 'discount': 7.9, 'exit_mult': 2.9, 'forecast': 7},
+                    'NVDA': {'rev_growth': 25.0, 'net_margin': 40.0, 'cash_conv': 90.0, 'discount': 9.0, 'exit_mult': 10.0, 'forecast': 5},
+                    # Add more tickers as needed
+                }
+                ticker_upper = ticker.upper()
+                if ticker_upper in alphaspread_base:
+                    params = alphaspread_base[ticker_upper]
+                    st.session_state.rev_growth_input = params['rev_growth']
+                    st.session_state.net_margin_input = params['net_margin']
+                    st.session_state.cash_conv_input = params['cash_conv']
+                    st.session_state.discount_rate_input = params['discount']
+                    st.session_state.exit_multiple_input = params['exit_mult']
+                    st.session_state.forecast_years_input = params['forecast']
+                    st.rerun()
+                else:
+                    st.warning(f"No Alpha Spread Base Case data for {ticker_upper}. Please adjust manually.")
+    
+            # ----- Show historical averages for reference -----
             with st.expander("📈 Historical 5Y Averages (for reference)"):
                 st.write(f"Revenue growth: {hist_growth:.1%}" if hist_growth else "Revenue growth: N/A")
                 st.write(f"Net margin: {hist_margin:.1%}" if hist_margin else "Net margin: N/A")
                 st.write(f"Cash conversion: {hist_conversion:.0%}" if hist_conversion else "Cash conversion: N/A")
-
-            # User adjustable parameters
+                _ps = metrics.get('current_ps_ratio')
+                st.write(f"Current P/S: {_ps:.2f}" if _ps else "Current P/S: N/A")
+    
+            # ----- User adjustable parameters (using session state) -----
             col1, col2, col3 = st.columns(3)
             with col1:
                 revenue_growth = st.number_input(
                     "Revenue Growth (%)", 
-                    min_value=-10.0, max_value=50.0,  # increased max to 50%
-                    value=rev_growth_default, step=0.5
+                    min_value=-10.0, max_value=50.0, 
+                    value=st.session_state.rev_growth_input, step=0.5,
+                    key='rev_growth_input'
                 ) / 100.0
                 net_margin = st.number_input(
                     "Net Margin (%)", 
                     min_value=0.0, max_value=50.0, 
-                    value=net_margin_default, step=0.5
+                    value=st.session_state.net_margin_input, step=0.5,
+                    key='net_margin_input'
                 ) / 100.0
             with col2:
                 cash_conversion = st.number_input(
                     "Cash Conversion (%)", 
                     min_value=0.0, max_value=200.0, 
-                    value=cash_conv_default, step=5.0
+                    value=st.session_state.cash_conv_input, step=5.0,
+                    key='cash_conv_input'
                 ) / 100.0
                 discount_rate = st.number_input(
                     "Discount Rate (%)", 
                     min_value=0.0, max_value=30.0, 
-                    value=discount_rate_default, step=0.5
+                    value=st.session_state.discount_rate_input, step=0.5,
+                    key='discount_rate_input'
                 ) / 100.0
             with col3:
                 exit_multiple = st.number_input(
                     "Exit Multiple (P/S)", 
                     min_value=0.0, max_value=50.0, 
-                    value=exit_multiple_default, step=0.5
+                    value=st.session_state.exit_multiple_input, step=0.5,
+                    key='exit_multiple_input'
                 )
                 forecast_years = st.slider(
                     "Forecast Period (years)", 
                     min_value=1, max_value=15, 
-                    value=forecast_years_default, step=1
+                    value=st.session_state.forecast_years_input, step=1,
+                    key='forecast_years_input'
                 )
                 margin_of_safety = st.slider(
                     "Margin of Safety (%)", 
                     min_value=0, max_value=50, 
                     value=30, step=5
                 ) / 100.0
-
+    
             # Compute the advanced DCF
             with st.spinner("Calculating advanced DCF..."):
                 adv = calculate_intrinsic_value_advanced(
@@ -1533,7 +1576,7 @@ if st.session_state.single_ticker_results is not None:
                     forecast_years=forecast_years,
                     margin_of_safety=margin_of_safety
                 )
-
+    
             if adv.get('error'):
                 st.info(f"⚠️ {adv['error']} – Advanced DCF unavailable.")
             else:
@@ -1542,12 +1585,12 @@ if st.session_state.single_ticker_results is not None:
                 col1.metric("💎 Intrinsic Value", f"${adv['intrinsic_value']:.2f}")
                 col2.metric("🎯 Target Price", f"${adv['max_buy_price']:.2f} (MoS {adv['margin_of_safety']:.0%})")
                 col3.metric("📉 Current Price", f"${adv['current_price']:.2f}")
-
+    
                 if adv['discount_pct'] > 0:
                     st.metric("📊 Discount to Intrinsic Value", f"{adv['discount_pct']:.1f}%")
                 else:
                     st.metric("📊 Premium to Intrinsic Value", f"{-adv['discount_pct']:.1f}%")
-
+    
                 # Verdict
                 if adv['verdict_color'] == "green":
                     st.success(adv['verdict'])
@@ -1555,12 +1598,24 @@ if st.session_state.single_ticker_results is not None:
                     st.warning(adv['verdict'])
                 else:
                     st.error(adv['verdict'])
-
+    
                 # Show detailed assumptions and projections
                 with st.expander("📐 Advanced DCF Details"):
+                    def _fmt_money(v):
+                        if v is None:
+                            return "N/A"
+                        if abs(v) >= 1e12:
+                            return f"${v/1e12:,.2f}T"
+                        elif abs(v) >= 1e9:
+                            return f"${v/1e9:,.2f}B"
+                        elif abs(v) >= 1e6:
+                            return f"${v/1e6:,.2f}M"
+                        else:
+                            return f"${v:,.0f}"
+
                     st.write(f"**Company:** {adv['company_name']} ({ticker})")
-                    st.write(f"**Latest Revenue (TTM):** ${adv['latest_revenue']:,.0f}M")
-                    st.write(f"**Net Cash:** ${adv['net_cash']:,.0f}M")
+                    st.write(f"**Latest Revenue (TTM):** {_fmt_money(adv['latest_revenue'])}")
+                    st.write(f"**Net Cash:** {_fmt_money(adv['net_cash'])}")
                     st.write(f"**Shares Outstanding:** {adv['shares_outstanding']:,.0f}")
                     st.write(f"**Revenue Growth (CAGR):** {adv['revenue_growth_used']:.1%}")
                     st.write(f"**Net Margin:** {adv['net_margin_used']:.1%}")
@@ -1568,11 +1623,11 @@ if st.session_state.single_ticker_results is not None:
                     st.write(f"**Discount Rate:** {adv['discount_rate_used']:.1%}")
                     st.write(f"**Exit Multiple (P/S):** {adv['exit_multiple_used']:.1f}x")
                     st.write(f"**Forecast Period:** {adv['forecast_years']} years")
-                    st.write(f"**Terminal Value (PV):** ${adv['pv_terminal']:,.0f}M")
-                    st.write(f"**Total PV of FCFE:** ${adv['total_pv_fcfe']:,.0f}M")
-                    st.write(f"**Enterprise Value:** ${adv['enterprise_value']:,.0f}M")
-                    st.write(f"**Equity Value:** ${adv['equity_value']:,.0f}M")
-
+                    st.write(f"**Terminal Value (PV):** {_fmt_money(adv['pv_terminal'])}")
+                    st.write(f"**Total PV of FCFE:** {_fmt_money(adv['total_pv_fcfe'])}")
+                    st.write(f"**Enterprise Value:** {_fmt_money(adv['enterprise_value'])}")
+                    st.write(f"**Equity Value:** {_fmt_money(adv['equity_value'])}")
+    
                     # Projection table
                     proj_df = pd.DataFrame({
                         'Year': [f"Y{i+1}" for i in range(forecast_years)],
