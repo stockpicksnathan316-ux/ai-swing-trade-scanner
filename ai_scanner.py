@@ -1409,22 +1409,38 @@ if st.session_state.single_ticker_results is not None:
         # Fetch metrics for this ticker
         metrics = get_financial_metrics(ticker)
         
+        # Reset slider state if the ticker has changed
+        if st.session_state.get('last_dcf_ticker') != ticker:
+            st.session_state.last_dcf_ticker = ticker
+            for key in ['rev_growth_input', 'net_margin_input', 'cash_conv_input',
+                        'discount_rate_input', 'exit_multiple_input', 'forecast_years_input']:
+                if key in st.session_state:
+                    del st.session_state[key]
+
         if 'error' in metrics:
             st.info(f"⚠️ {metrics['error']} – Cannot load advanced DCF data.")
         else:
             # ----- Compute default values from metrics -----
             
-            # 1. Revenue Growth: blend SEC historical (70%) with forward (30%)
+            # 1. Revenue Growth: adaptive blend based on historical sign
             hist_growth = metrics.get('revenue_growth_hist')
             forward_growth = metrics.get('forward_revenue_growth')
-            if hist_growth and hist_growth > 0:
-                if forward_growth and forward_growth > 0:
+            if hist_growth is not None and forward_growth is not None and forward_growth > 0:
+                if hist_growth > 0:
+                    # Normal case: 70% historical, 30% forward
                     blended = 0.7 * hist_growth + 0.3 * forward_growth
-                    rev_growth_default = round(blended * 100, 1)
                     growth_source = "Blend (70% Hist + 30% Fwd)"
                 else:
-                    rev_growth_default = round(hist_growth * 100, 1)
-                    growth_source = "SEC Historical 5Y CAGR"
+                    # Negative historical: trust forward more
+                    blended = 0.3 * hist_growth + 0.7 * forward_growth
+                    growth_source = "Blend (30% Hist + 70% Fwd, negative hist)"
+                rev_growth_default = round(blended * 100, 1)
+            elif hist_growth is not None and hist_growth > 0:
+                rev_growth_default = round(hist_growth * 100, 1)
+                growth_source = "SEC Historical 5Y CAGR"
+            elif forward_growth is not None and forward_growth > 0:
+                rev_growth_default = round(forward_growth * 100, 1)
+                growth_source = "Forward (no history)"
             else:
                 rev_growth_default = 8.0
                 growth_source = "Default"
@@ -1454,16 +1470,23 @@ if st.session_state.single_ticker_results is not None:
                 cash_conv_default = 100.0
             cash_conv_default = max(0.0, min(200.0, cash_conv_default))
     
-            # 4. Exit Multiple: fixed conservative default (users can adjust)
-            exit_multiple_default = 5.5
-            exit_source = "Default (mature-stage)"
+            # 4. Exit Multiple: scale from current P/S (Alpha Spread-style)
+            ps_ratio = metrics.get('current_ps_ratio')
+            if ps_ratio is not None and ps_ratio > 0:
+                # Alpha uses ~55-60% of high P/S, ~100% of low P/S
+                exit_multiple_default = round(ps_ratio * (0.5 + 0.5 / max(1.0, ps_ratio)), 2)
+                exit_source = f"Scaled from {ps_ratio:.2f}x P/S"
+            else:
+                exit_multiple_default = 5.0
+                exit_source = "Default"
+            exit_multiple_default = max(0.5, min(15.0, exit_multiple_default))
     
             # 5. Discount Rate: 8.8% default (matches Alpha Spread's convention)
             discount_rate_default = 8.8
             discount_source = "Default (8.8%)"
             discount_rate_default = max(0.0, min(30.0, discount_rate_default))
     
-            # 6. Forecast Period: fixed at 5 years
+            # 6. Forecast Period: 7 years (matches Alpha Spread convention)
             forecast_years_default = 5
     
             # ----- Set session state defaults if not already present -----
