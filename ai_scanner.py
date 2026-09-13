@@ -193,9 +193,16 @@ supabase = create_client(supabase_url, supabase_key)
 # Restore session if we have valid tokens in session state
 if 'supabase_session' in st.session_state and st.session_state.supabase_session is not None:
     session = st.session_state.supabase_session
-    # Ensure session has the required keys
     if 'access_token' in session and 'refresh_token' in session:
-        supabase.auth.set_session(session['access_token'], session['refresh_token'])
+        try:
+            supabase.auth.set_session(session['access_token'], session['refresh_token'])
+        except Exception as e:
+            # Session restore failed (network timeout, expired token, etc.)
+            # Clear the session and let the user log in again
+            st.session_state.supabase_session = None
+            st.session_state.user_email = None
+            # Optional: surface a friendly message
+            # st.sidebar.warning("Session expired – please log in again.")
 
 # ------------------- Email‑based tracking functions -------------------
 def get_user_scans_used(email):
