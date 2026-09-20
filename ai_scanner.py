@@ -1673,6 +1673,47 @@ if st.session_state.single_ticker_results is not None:
                         'PV FCFE ($M)': '{:,.0f}'
                     }))
 
+    # ==================== RECENT SEC FILINGS ====================
+    with st.expander("📄 Recent SEC Filings"):
+        from sec_data import fetch_recent_filings
+
+        form_filter = st.multiselect(
+            "Filter by form type",
+            options=[
+                "10-K", "10-Q", "8-K", "DEF 14A", "4", "S-8", "S-1", "S-3",
+                "SC 13D", "SC 13G",  # 5% ownership filings
+                "10-K/A", "10-Q/A", "8-K/A", "DEF 14A/A",  # amendments
+            ],
+            default=["10-K", "10-Q", "8-K"],
+            help=(
+                "Includes amendments automatically (e.g., '8-K' shows '8-K' and '8-K/A'). "
+                "SC 13D = activist >5% holder. SC 13G = passive >5% holder. "
+                "Leave empty to show all filings."
+            ),
+        )
+
+        with st.spinner("Loading SEC filings..."):
+            filings_df = fetch_recent_filings(
+                ticker,
+                limit=25,
+                form_filter=form_filter if form_filter else None,
+            )
+
+        if filings_df is None or filings_df.empty:
+            st.info("No recent filings found for this ticker (may be a non-US listed company).")
+        else:
+            st.dataframe(
+                filings_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Link": st.column_config.LinkColumn("Document", display_text="📄 Open"),
+                    "Form": st.column_config.TextColumn("Form", width="small"),
+                    "Filed": st.column_config.TextColumn("Filed", width="small"),
+                    "Period": st.column_config.TextColumn("Period", width="small"),
+                },
+            )
+
     # --- Feature importance (optional) ---
     if st.checkbox("Show what XGBoost learned"):
         importance = pd.DataFrame({
