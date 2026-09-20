@@ -253,3 +253,105 @@ def fetch_sec_financials(ticker):
         "cik": cik,
         "entity_name": entity_name,
     }
+
+# ============================================================
+# Recent filings
+# ============================================================
+FILINGS_CACHE_MAX_AGE_HOURS = 1
+
+
+def _load_submissions(cik):
+    """Load SEC submissions JSON for a CIK (cached for 6 hours)."""
+    cache_file = CACHE_DIR / f"submissions_{cik}.json"
+    if cache_file.exists():
+        age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
+        if age < timedelta(hours=FILINGS_CACHE_MAX_AGE_HOURS):
+            with open(cache_file, "r") as f:
+                return json.load(f)
+    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    r = _get(url)
+    cache_file.write_bytes(r.content)
+    return json.loads(r.content)
+
+def _form_matches(form, filters):
+    """
+    Check if a filing form matches any filter using prefix logic.
+    '8-K' matches '8-K' AND '8-K/A'. '10-Q' matches '10-Q' AND '10-Q/A'.
+    """
+    if not filters:
+        return True
+    for f in filters:
+        if form == f:
+            return True
+        if form.startswith(f + "/"):
+            return True
+    return False
+
+
+
+def fetch_recent_filings(ticker, limit=25, form_filter=None):
+    """
+    Fetch recent SEC filings for a ticker.
+
+    Args:
+        ticker: stock ticker symbol
+        limit: max number of filings to return
+        form_filter: optional list of form types (e.g., ['10-K', '10-Q', '8-K'])
+                     If None, returns all forms.
+
+    Returns:
+        pandas DataFrame with columns: Form, Filed, Period, Description, Link
+        Or None if the ticker isn't US-listed or has no filings.
+    """
+    cik = get_cik(ticker)
+    if not cik:
+        return None
+
+    try:
+        subs = _load_submissions(cik)
+    except Exception:
+        return None
+
+    recent = subs.get("filings", {}).get("recent", {})
+    if not recent:
+        return None
+
+    forms = recent.get("form", [])
+    dates = recent.get("filingDate", [])
+    periods = recent.get("reportDate", [])
+    docs = recent.get("primaryDocument", [])
+    accs = recent.get("accessionNumber", [])
+    descs = recent.get("primaryDocDescription", [])
+
+    cik_short = str(int(cik))  # strip leading zeros
+
+    rows = []
+    for i in range(min(len(forms), len(dates))):
+        form = forms[i]
+        if not _form_matches(form, form_filter):
+            continue
+
+        acc = accs[i].replace("-", "") if i < len(accs) else ""
+        doc = docs[i] if i < len(docs) else ""
+
+        if acc and doc:
+            link = f"https://www.sec.gov/Archives/edgar/data/{cik_short}/{acc}/{doc}"
+        else:
+            link = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={form}"
+
+        rows.append({
+            "Form": form,
+            "Filed": dates[i],
+            "Period": periods[i] if i < len(periods) else "",
+            "Description": (descs[i][:80] if i < len(descs) else ""),
+            "Link": link,
+        })
+
+        if len(rows) >= limit:
+            break
+
+    if not rows:
+        return None
+
+    import pandas as pd  # already imported at top, but safe
+    return pd.DataFrame(rows)
