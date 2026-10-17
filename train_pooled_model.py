@@ -15,9 +15,9 @@ import yfinance as yf
 START_DATE = (datetime.now() - timedelta(days=3*365)).strftime('%Y-%m-%d')   # last 3 years
 END_DATE = datetime.now().strftime('%Y-%m-%d')
 TICKERS_CSV = 'tickers.csv'
-MODEL_SAVE_PATH = 'pooled_model.pkl'
-FEATURE_COLS_SAVE_PATH = 'pooled_feature_cols.pkl'
-CALIBRATION_MAP_PATH = 'calibration_map.pkl'
+MODEL_SAVE_PATH = 'pooled_model_v4.pkl'
+FEATURE_COLS_SAVE_PATH = 'pooled_feature_cols_v4.pkl'
+CALIBRATION_MAP_PATH = 'calibration_map_v4.pkl'
 
 # --- Load tickers ---
 tickers_df = pd.read_csv(TICKERS_CSV)

@@ -20,6 +20,7 @@ from feature_engineering import get_fundamentals
 import hashlib
 import time
 import sys
+from pathlib import Path
 
 def ensure_numeric(df):
     """Convert all columns to float32, replace inf, and fill NaN with 0."""
@@ -67,7 +68,7 @@ def get_model_for_target(target_str):
         return model, cal_map, feat_cols
     else:
         # Use your original pooled model as ultimate fallback
-        return joblib.load('pooled_model.pkl'), joblib.load('calibration_map.pkl'), joblib.load('pooled_feature_cols.pkl')
+        return joblib.load('pooled_model_v4.pkl'), joblib.load('calibration_map_v4.pkl'), joblib.load('pooled_feature_cols_v4.pkl')
 
 # ------------------- Helper: safe technical indicators -------------------
 def safe_add_ta_features(df, min_rows=10):
@@ -303,6 +304,44 @@ def fetch_macro_data(period="1y"):
     macro_df = macro_df.ffill().bfill()
     return macro_df
 
+@st.cache_data(ttl=3600)
+def load_reaction_stats():
+    """Load Phase 2 reaction stats (Task 2 output). Returns None if not built yet."""
+    path = Path("event_cache/reaction_stats.parquet")
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600)
+def load_surprise_stats():
+    """Load Phase 2 surprise-conditioned stats. Returns None if not built yet."""
+    path = Path("event_cache/surprise_stats.parquet")
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return None
+
+
+
+@st.cache_data(ttl=3600)
+def load_signal_verdicts():
+    """Load backtest verdicts from Task 4. Returns None if not built yet."""
+    path = Path("event_cache/signal_verdicts.parquet")
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return None
+
+
+
 @st.cache_data(ttl=86400)
 def get_macro_sector_data_cached(period="2y"):
     """Fetch macro and sector data for the given period using feature_engineering, plus CL, and ensure all required columns exist."""
@@ -427,8 +466,6 @@ if st.session_state.user_email:
 # ------------------- After login: show user info & logout -------------------
 
 # Logo with robust path (works locally and on Streamlit Cloud)
-from pathlib import Path
-
 logo_path = Path(__file__).parent / "Tick_sniper_final_logo.png"
 if logo_path.exists():
     st.sidebar.image(str(logo_path), width=200)
@@ -506,11 +543,11 @@ if profit_target != "Any up":
             st.sidebar.warning("Pooled model not found. Using per‑stock training (slower).")
 else:
     # "Any up" selected – load original pooled model
-    if os.path.exists('pooled_model.pkl'):
-        pooled_model = joblib.load('pooled_model.pkl')
-        calibration_map = joblib.load('calibration_map.pkl')
-        pooled_feature_cols = joblib.load('pooled_feature_cols.pkl')
-        st.sidebar.success("✅ Loaded pooled model (any up move)")
+    if os.path.exists('pooled_model_v4.pkl'):
+        pooled_model = joblib.load('pooled_model_v4.pkl')
+        calibration_map = joblib.load('calibration_map_v4.pkl')
+        pooled_feature_cols = joblib.load('pooled_feature_cols_v4.pkl')
+        st.sidebar.success("✅ Loaded pooled model v4 (any up move)")
     else:
         pooled_model = None
         pooled_feature_cols = None
@@ -661,6 +698,187 @@ if "checkout_url" in st.session_state:
     st.link_button("💳 Pay $20/month and unlock unlimited scans", url)
     # Clear URL after showing button
     del st.session_state.checkout_url
+
+# ------------------- Phase 2: Event Reaction Panel -------------------
+def _render_event_reaction_panel(selection, events_df):
+    """Renders historical sector reactions for the event selected in the calendar table."""
+    if not selection or not selection.selection.rows:
+        return
+
+    selected_idx = selection.selection.rows[0]
+    if selected_idx >= len(events_df):
+        return
+
+    selected_event = events_df.iloc[selected_idx]
+    event_display = selected_event["Event"]
+
+    calendar_to_db = {
+        "CPI (YoY)": "CPI",
+        "Non-Farm Payrolls": "NFP",
+        "FOMC Rate Decision": "FOMC",
+    }
+    db_key = calendar_to_db.get(event_display)
+
+    st.markdown("---")
+    st.markdown(f"### 📊 Historical Reaction: **{event_display}**")
+
+    if db_key is None:
+        st.info(
+            f"Historical reaction data is not yet available for **{event_display}**. "
+            f"Phase 2 v1 covers **CPI**, **Non-Farm Payrolls**, and **FOMC** only."
+        )
+        return
+
+    stats = load_reaction_stats()
+    if stats is None or stats.empty:
+        st.warning(
+            "Reaction database not found. Run `python build_event_database.py` "
+            "then `python event_reactions.py` to build it."
+        )
+        return
+
+    sub = stats[stats["event_type"] == db_key].copy()
+    if sub.empty:
+        st.info(f"No historical data found for {event_display}.")
+        return
+
+    sub = sub.sort_values("avg_move_pct", ascending=False).reset_index(drop=True)
+
+    # ---- Load backtest verdicts (Phase 2.4) ----
+    verdicts = load_signal_verdicts()
+    validated = {}  # {sector_etf: {oos_n, oos_win_rate, oos_avg_ret, oos_sharpe}}
+    if verdicts is not None and not verdicts.empty:
+        vsub = verdicts[verdicts["event_type"] == db_key]
+        for _, v in vsub.iterrows():
+            # Validation thresholds
+            if (
+                v["oos_win_rate"] >= 0.60
+                and v["oos_sharpe"] >= 1.0
+                and v["oos_n"] >= 30
+            ):
+                validated[v["sector_etf"]] = {
+                    "oos_n": int(v["oos_n"]),
+                    "oos_win_rate": float(v["oos_win_rate"]),
+                    "oos_avg_ret": float(v["oos_avg_ret"]),
+                    "oos_sharpe": float(v["oos_sharpe"]),
+                }
+
+    # ---- Validated signal callout (if any sector passed the backtest) ----
+    if validated:
+        for etf, v in validated.items():
+            sector_name = sub[sub["sector_etf"] == etf]["sector_name"].iloc[0]
+            st.success(
+                f"★ **Validated signal: Long {etf} ({sector_name})**\n\n"
+                f"Buy at close the trading day before **{event_display}**, "
+                f"sell at close on the event day.\n\n"
+                f"**Out-of-sample (2021+):** {v['oos_win_rate']:.1%} win rate · "
+                f"{v['oos_avg_ret']*100:+.3f}% avg return · "
+                f"Sharpe {v['oos_sharpe']:.2f} · n={v['oos_n']}"
+            )
+
+    top3 = sub.head(3)
+    bottom3 = sub.tail(3).iloc[::-1]
+
+    def _badge(etf):
+        return " ★" if etf in validated else ""
+
+    col_up, col_down = st.columns(2)
+    with col_up:
+        st.markdown("**📈 Historically strongest sectors**")
+        for _, row in top3.iterrows():
+            st.write(
+                f"- **{row['sector_etf']}**{_badge(row['sector_etf'])} "
+                f"({row['sector_name']}): "
+                f"{row['win_rate']:.0%} up, {row['avg_move_pct']*100:+.2f}% avg "
+                f"(n={row['sample_size']})"
+            )
+    with col_down:
+        st.markdown("**📉 Historically weakest sectors**")
+        for _, row in bottom3.iterrows():
+            st.write(
+                f"- **{row['sector_etf']}**{_badge(row['sector_etf'])} "
+                f"({row['sector_name']}): "
+                f"{row['win_rate']:.0%} up, {row['avg_move_pct']*100:+.2f}% avg "
+                f"(n={row['sample_size']})"
+            )
+
+    with st.expander("📋 Full sector breakdown", expanded=False):
+        display = sub[[
+            "sector_etf", "sector_name", "win_rate",
+            "avg_move_pct", "median_move_pct", "sample_size",
+            "avg_move_day_before_pct", "avg_move_day_after_pct",
+        ]].copy()
+        display["Signal"] = display["sector_etf"].apply(
+            lambda x: "★ Validated" if x in validated else "—"
+        )
+        display.columns = [
+            "ETF", "Sector", "Win Rate",
+            "Avg Move", "Median Move", "N",
+            "Avg Day Before", "Avg Day After", "Signal",
+        ]
+        display["Win Rate"] = display["Win Rate"].apply(lambda x: f"{x:.1%}")
+        display["Avg Move"] = display["Avg Move"].apply(lambda x: f"{x*100:+.2f}%")
+        display["Median Move"] = display["Median Move"].apply(lambda x: f"{x*100:+.2f}%")
+        display["Avg Day Before"] = display["Avg Day Before"].apply(
+            lambda x: f"{x*100:+.2f}%" if pd.notna(x) else "N/A"
+        )
+        display["Avg Day After"] = display["Avg Day After"].apply(
+            lambda x: f"{x*100:+.2f}%" if pd.notna(x) else "N/A"
+        )
+        st.dataframe(display, use_container_width=True, hide_index=True)
+        if validated:
+            st.caption(
+                "★ Validated = sector passed the 2021+ out-of-sample backtest "
+                "(win rate ≥ 60%, Sharpe ≥ 1.0, n ≥ 30)."
+            )
+
+    import plotly.express as px
+    chart_df = sub.copy()
+    chart_df["Avg Move (%)"] = chart_df["avg_move_pct"] * 100
+    fig = px.bar(
+        chart_df.sort_values("Avg Move (%)"),
+        x="Avg Move (%)",
+        y="sector_etf",
+        orientation="h",
+        color="Avg Move (%)",
+        color_continuous_scale=["#c62828", "#f5f5f5", "#2e7d32"],
+        color_continuous_midpoint=0,
+        title=f"Sector reaction on {event_display} day (avg return, close-to-close)",
+    )
+    fig.update_layout(height=400, showlegend=False, coloraxis_showscale=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    surprise_stats = load_surprise_stats()
+    if surprise_stats is not None and not surprise_stats.empty:
+        ssub = surprise_stats[surprise_stats["event_type"] == db_key]
+        if not ssub.empty:
+            with st.expander("🎲 Surprise-conditioned reactions (hot vs cool prints)", expanded=False):
+                for bucket in ["positive", "negative"]:
+                    bsub = ssub[ssub["surprise_bucket"] == bucket]
+                    if bsub.empty:
+                        continue
+                    label = (
+                        "Positive surprise (hotter than expected)"
+                        if bucket == "positive"
+                        else "Negative surprise (cooler than expected)"
+                    )
+                    st.markdown(f"**{label}**")
+                    bsub = bsub.sort_values("avg_move_pct", ascending=False)
+                    bdisplay = bsub[[
+                        "sector_etf", "sector_name", "win_rate",
+                        "avg_move_pct", "sample_size",
+                    ]].copy()
+                    bdisplay.columns = ["ETF", "Sector", "Win Rate", "Avg Move", "N"]
+                    bdisplay["Win Rate"] = bdisplay["Win Rate"].apply(lambda x: f"{x:.1%}")
+                    bdisplay["Avg Move"] = bdisplay["Avg Move"].apply(lambda x: f"{x*100:+.2f}%")
+                    st.dataframe(bdisplay, use_container_width=True, hide_index=True)
+
+    st.caption(
+        "ℹ️ Returns measured close-to-close from the trading day before the release. "
+        "Sample sizes of N < 20 should be treated as indicative only."
+    )
+
+
 
 # ------------------- MAIN APP (single ticker) -------------------
 ticker = st.text_input("Stock", "AAPL", key="main_ticker")
@@ -1672,6 +1890,80 @@ if st.session_state.single_ticker_results is not None:
                         'FCFE ($M)': '{:,.0f}',
                         'PV FCFE ($M)': '{:,.0f}'
                     }))
+
+    # ==================== ECONOMIC CALENDAR ====================
+    with st.expander("📅 Upcoming Economic Calendar"):
+        from econ_calendar import get_upcoming_events
+
+        col_a, col_b, col_c = st.columns([1, 1, 1])
+        with col_a:
+            days_ahead = st.selectbox(
+                "Look ahead",
+                options=[7, 14, 30, 90],
+                index=1,
+                key="econ_days",
+            )
+        with col_b:
+            impact_filter = st.selectbox(
+                "Impact",
+                options=["All", "High", "Medium"],
+                index=0,
+                key="econ_impact",
+            )
+        with col_c:
+            category_filter = st.selectbox(
+                "Category",
+                options=["All", "Inflation", "Employment", "Fed", "Consumer", "Growth"],
+                index=0,
+                key="econ_category",
+            )
+
+        events_df = get_upcoming_events(
+            days_ahead=days_ahead,
+            impact_filter=impact_filter,
+            category_filter=category_filter,
+        )
+
+        if events_df.empty:
+            st.info("No upcoming events match the current filters.")
+        else:
+            # Color-code rows by impact
+            def highlight_impact(row):
+                if row["Impact"] == "High":
+                    return ["background-color: #4a1e1e"] * len(row)
+                elif row["Impact"] == "Medium":
+                    return ["background-color: #4a3a1e"] * len(row)
+                return [""] * len(row)
+
+            styled = events_df.style.apply(highlight_impact, axis=1)
+
+            st.caption("👉 Click a row below to see how that event has historically moved each sector.")
+
+            selection = st.dataframe(
+                styled,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="econ_calendar_table",
+                column_config={
+                    "Date": st.column_config.TextColumn("Date", width="small"),
+                    "Time": st.column_config.TextColumn("Time", width="small"),
+                    "Event": st.column_config.TextColumn("Event", width="medium"),
+                    "Impact": st.column_config.TextColumn("Impact", width="small"),
+                    "Category": st.column_config.TextColumn("Category", width="small"),
+                    "Description": st.column_config.TextColumn("Description", width="large"),
+                    "Days Until": st.column_config.TextColumn("When", width="small"),
+                },
+            )
+
+            st.caption(
+                "📊 Data source: BLS, Federal Reserve, Census Bureau · "
+                "All times Eastern · Updated quarterly · "
+                "🔴 High impact · 🟡 Medium impact"
+            )
+
+            _render_event_reaction_panel(selection, events_df)
 
     # ==================== RECENT SEC FILINGS ====================
     with st.expander("📄 Recent SEC Filings"):
