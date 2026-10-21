@@ -74,7 +74,6 @@ ISRG,Healthcare
 BDX,Healthcare
 MDT,Healthcare
 SYK,Healthcare
-FOLD,Healthcare
 XOM,Energy
 CVX,Energy
 COP,Energy
@@ -132,3 +131,7 @@ QQQ,Broad Market ETFs
 IWM,Broad Market ETFs
 VTI,Broad Market ETFs
 DIA,Broad Market ETFs
+GLD,Commodities
+USO,Commodities
+COPX,Commodities
+DBA,Commodities

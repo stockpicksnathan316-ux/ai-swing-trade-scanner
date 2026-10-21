@@ -291,6 +291,38 @@ MACRO_SYMBOLS = {
     'CL': 'CL=F',
 }
 
+# ------------------- Commodity symbols (Phase 5) -------------------
+COMMODITY_SYMBOLS = {
+    'Gold': 'GC=F',
+    'Copper': 'HG=F',
+    'Crude Oil': 'CL=F',
+    'Natural Gas': 'NG=F',
+    'Wheat': 'ZW=F'
+}
+
+# Map commodities to the sector ETF they impact the most
+COMMODITY_TO_SECTOR = {
+    'Gold': 'XLF',       # Often inversely correlates with real yields/financials
+    'Copper': 'XLB',     # Basic Materials (Copper is a massive input)
+    'Crude Oil': 'XLE',  # Energy
+    'Natural Gas': 'XLU',# Utilities (fuel cost)
+    'Wheat': 'XLP'       # Consumer Defensive (food inflation)
+}
+
+@st.cache_data(ttl=3600)
+def get_commodity_data_cached(period="1y"):
+    df = pd.DataFrame()
+    for name, symbol in COMMODITY_SYMBOLS.items():
+        try:
+            data = yf.download(symbol, period=period, progress=False)
+            if not data.empty:
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = data.columns.droplevel(1)
+                df[name] = data['Close']
+        except Exception:
+            pass
+    return df.ffill().bfill()
+
 @st.cache_data(ttl=21600)
 def fetch_macro_data(period="1y"):
     macro_df = pd.DataFrame()
@@ -1282,6 +1314,95 @@ if st.session_state.single_ticker_results is not None:
             col5.metric("📊 Calibrated Win Rate", "N/A")
     st.caption(f"📅 Latest Data: {str(res['df'].index[-1].date())}")
 
+    # ==================== SECTOR CORRELATION & ROTATION (PHASE 4) ====================
+    with st.expander("🔄 Sector Correlation & Rotation", expanded=False):
+        import plotly.express as px
+        
+        st.markdown("### 🧭 Sector Rotation Detector")
+        st.caption("Visualizes where capital is flowing across the 11 SPDR sectors over the last month.")
+        
+        # Fetch sector data (cached, zero new API calls)
+        sector_macro = get_macro_sector_data_cached("1y")
+        sector_cols = [c for c in sector_macro.columns if c.endswith('_close') and c != 'SPY_close']
+        
+        if not sector_cols:
+            st.warning("Sector data not available.")
+        else:
+            # 1. Rotation (1-Month Returns)
+            if len(sector_macro) > 21:
+                ret_1m = (sector_macro[sector_cols].iloc[-1] / sector_macro[sector_cols].iloc[-21]) - 1
+                ret_1m.index = [c.replace('_close', '') for c in ret_1m.index]
+                ret_1m = ret_1m.sort_values()
+                
+                fig_rot = px.bar(
+                    ret_1m, 
+                    x=ret_1m.values, 
+                    y=ret_1m.index, 
+                    orientation='h',
+                    title="1-Month Sector Performance (Rotation)",
+                    color=ret_1m.values,
+                    color_continuous_scale=["#c62828", "#f5f5f5", "#2e7d32"],
+                    color_continuous_midpoint=0,
+                    labels={'x': '1-Month Return', 'y': 'Sector ETF'}
+                )
+                fig_rot.update_layout(showlegend=False, coloraxis_showscale=False, height=400)
+                st.plotly_chart(fig_rot, use_container_width=True)
+                
+            st.markdown("---")
+            
+            # 2. Correlation Matrix
+            st.markdown("### 🔗 Sector Correlation Matrix")
+            st.caption("Shows how tightly coupled the sectors are over the past 60 trading days.")
+            
+            # Calculate 60-day correlation of daily returns
+            recent_data = sector_macro[sector_cols].iloc[-60:]
+            daily_rets = recent_data.pct_change().dropna()
+            corr_matrix = daily_rets.corr()
+            corr_matrix.columns = [c.replace('_close', '') for c in corr_matrix.columns]
+            corr_matrix.index = [c.replace('_close', '') for c in corr_matrix.index]
+            
+            fig_corr = px.imshow(
+                corr_matrix, 
+                text_auto=".2f", 
+                aspect="auto", 
+                color_continuous_scale="RdBu_r",
+                zmin=-1, zmax=1,
+                title="60-Day Correlation Matrix"
+            )
+            fig_corr.update_layout(height=500)
+            st.plotly_chart(fig_corr, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # 3. Stock vs Sector Context
+            st.markdown("### 📍 Stock vs. Sector Context")
+            ticker_upper = st.session_state.ticker_upper
+            ticker_sector = TICKERS.get(ticker_upper, 'Unknown')
+            sector_etf = sector_to_etf.get(ticker_sector)
+            
+            if sector_etf and f'{sector_etf}_close' in sector_macro.columns:
+                stock_df = res['df']
+                if len(stock_df) > 21:
+                    stock_ret_1m = (stock_df['Close'].iloc[-1] / stock_df['Close'].iloc[-21]) - 1
+                    sector_ret_1m = ret_1m.get(sector_etf, 0.0)
+                    
+                    c1, c2 = st.columns(2)
+                    c1.metric(f"{ticker_upper} 1M Return", f"{stock_ret_1m*100:+.1f}%")
+                    c2.metric(f"{sector_etf} ({ticker_sector}) 1M Return", f"{sector_ret_1m*100:+.1f}%")
+                    
+                    if stock_ret_1m > 0 and sector_ret_1m > 0:
+                        st.info(f"**Riding the tailwind.** {ticker_upper} is up and its sector ({sector_etf}) is also up. The stock has momentum in a supportive environment.")
+                    elif stock_ret_1m > 0 and sector_ret_1m < 0:
+                        st.success(f"**Outperforming a weak sector.** {ticker_upper} is up while its sector is down. This shows relative strength and resilience against the macro tide.")
+                    elif stock_ret_1m < 0 and sector_ret_1m > 0:
+                        st.warning(f"**Lagging a strong sector.** {ticker_upper} is down while its sector is up. This could be a catch-up play, or it could mean the stock has an idiosyncratic problem.")
+                    else:
+                        st.error(f"**Caught in a downdraft.** {ticker_upper} is down and its sector is down. The stock is being dragged by macro forces.")
+                else:
+                    st.info("Not enough recent data to calculate 1-month stock return.")
+            else:
+                st.info(f"Sector ETF mapping not found for {ticker_upper} (it might be an ETF or unclassified).")
+
     # --- Suggested Position Size based on calibrated win rate ---
     if 'live_prob_cal' in res and res['live_prob_cal'] is not None:
         pos_size = res['live_prob_cal']
@@ -1757,6 +1878,61 @@ if st.session_state.single_ticker_results is not None:
                 else:
                     st.warning(f"No Alpha Spread Base Case data for {ticker_upper}. Please adjust manually.")
     
+            # ----- PHASE 6: BULL / BASE / BEAR SCENARIOS -----
+            
+            # 1. Calculate the three scenarios based on the current metrics
+            # Base: Current defaults (70/30 blend)
+            base_growth = st.session_state.get('rev_growth_input', rev_growth_default)
+            base_margin = st.session_state.get('net_margin_input', net_margin_default)
+            base_discount = st.session_state.get('discount_rate_input', discount_rate_default)
+            base_exit = st.session_state.get('exit_multiple_input', exit_multiple_default)
+            
+            # Bear: Historical growth, lower margin, higher discount
+            bear_growth = round(max(-10.0, hist_growth * 100), 1) if hist_growth else max(-10.0, base_growth - 3.0)
+            bear_margin = round(max(0.0, hist_margin * 100 * 0.8), 1) if hist_margin else max(0.0, base_margin - 5.0)
+            bear_discount = round(base_discount + 1.5, 1)
+            bear_exit = round(max(0.5, base_exit * 0.8), 2)
+            
+            # Bull: Forward growth, higher margin, lower discount
+            bull_growth = round(min(50.0, forward_growth * 100), 1) if forward_growth else min(50.0, base_growth + 3.0)
+            bull_margin = round(min(50.0, forward_margin * 100), 1) if forward_margin else min(50.0, base_margin + 5.0)
+            bull_discount = round(max(0.0, base_discount - 1.0), 1)
+            bull_exit = round(min(50.0, base_exit * 1.3), 2)
+            
+            # 2. Build UI for Scenarios
+            st.markdown("### 🎯 Scenario Analysis")
+            st.caption("Compare the intrinsic value across different macroeconomic assumptions.")
+            
+            col_bear, col_base, col_bull = st.columns(3)
+            
+            with col_bear:
+                st.markdown("#### 🐻 Bear Case")
+                st.caption(f"Growth: {bear_growth}% | Margin: {bear_margin}%")
+                if st.button("Load Bear Case", key="btn_bear", use_container_width=True):
+                    st.session_state.rev_growth_input = bear_growth
+                    st.session_state.net_margin_input = bear_margin
+                    st.session_state.discount_rate_input = bear_discount
+                    st.session_state.exit_multiple_input = bear_exit
+                    st.rerun()
+                    
+            with col_base:
+                st.markdown("#### ⚖️ Base Case")
+                st.caption(f"Growth: {base_growth}% | Margin: {base_margin}%")
+                st.info("Currently Active")
+                
+            with col_bull:
+                st.markdown("#### 🚀 Bull Case")
+                st.caption(f"Growth: {bull_growth}% | Margin: {bull_margin}%")
+                if st.button("Load Bull Case", key="btn_bull", use_container_width=True):
+                    st.session_state.rev_growth_input = bull_growth
+                    st.session_state.net_margin_input = bull_margin
+                    st.session_state.discount_rate_input = bull_discount
+                    st.session_state.exit_multiple_input = bull_exit
+                    st.rerun()
+
+            st.markdown("---")
+
+
             # ----- Show historical averages for reference -----
             with st.expander("📈 Historical 5Y Averages (for reference)"):
                 st.write(f"Revenue growth: {hist_growth:.1%}" if hist_growth else "Revenue growth: N/A")
@@ -1891,6 +2067,110 @@ if st.session_state.single_ticker_results is not None:
                         'PV FCFE ($M)': '{:,.0f}'
                     }))
 
+    # ==================== LIVE EVENT MONITOR (PHASE 3) ====================
+    with st.expander("📡 Live Event Monitor (Phase 3)", expanded=False):
+        from econ_calendar import get_next_event
+        import yfinance as yf
+
+        st.markdown("### 🟢 Event-Day Pre-Market Monitor")
+        st.caption("Watches pre-market action on the morning of CPI/NFP and compares it to historical expectations.")
+
+        debug_force = st.checkbox("🧪 Force active view (debug - for testing on non-event days)", value=False)
+
+        # Look for nearest event
+        next_cpi = get_next_event("CPI")
+        next_nfp = get_next_event("Non-Farm")
+        
+        events = [e for e in [next_cpi, next_nfp] if e]
+        events.sort(key=lambda x: x["Days Until"])
+
+        if not events:
+            st.info("No upcoming CPI or NFP events found in the calendar database.")
+        else:
+            nearest = events[0]
+            is_active = (nearest["Days Until"] <= 1) or debug_force
+
+            if not is_active:
+                st.info(f"⏳ Monitor is sleeping. Next major event: **{nearest['Event']}** in **{nearest['Days Until']} days**.")
+                st.caption("The monitor will activate automatically on the day before and the morning of the event.")
+            else:
+                # Active state
+                event_name = nearest["Event"]
+                if debug_force:
+                    st.warning("⚠️ DEBUG MODE ACTIVE: Treating today as event day.")
+                    event_name = "CPI (YoY)" # Default to CPI for testing
+
+                # Map to our validated ETF
+                event_key = "CPI" if "CPI" in event_name else "NFP"
+                etf = "XLK" if event_key == "CPI" else "XLE"
+
+                st.markdown(f"#### Event Triggered: **{event_name}**")
+                st.markdown(f"Validated target: **{etf}**")
+
+                # Fetch data
+                with st.spinner(f"Fetching live data for {etf}..."):
+                    try:
+                        tk = yf.Ticker(etf)
+                        # Get historical daily for baseline
+                        daily = tk.history(period="5d")
+                        
+                        # Get pre-market/intraday
+                        intraday = tk.history(period="1d", interval="1m", prepost=True)
+                        
+                        if daily.empty:
+                            st.error("Could not fetch daily baseline data.")
+                        else:
+                            prev_close = daily['Close'].iloc[-2] if len(daily) >= 2 else daily['Close'].iloc[-1]
+                            last_close = daily['Close'].iloc[-1]
+                            
+                            # Determine "current" price (pre-market if available, else last close)
+                            current_price = last_close
+                            is_premarket = False
+                            
+                            if not intraday.empty:
+                                # Get the last available 1m bar
+                                current_price = intraday['Close'].iloc[-1]
+                                is_premarket = True
+                                
+                            move_pct = (current_price - prev_close) / prev_close
+
+                            # Display current metrics
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Prev Close", f"${prev_close:.2f}")
+                            col2.metric("Current / Pre-Market", f"${current_price:.2f}")
+                            col3.metric("Current Move", f"{move_pct*100:+.2f}%", 
+                                        delta=f"{move_pct*100:+.2f}%" if is_premarket else None)
+
+                            # Load historical expectation
+                            stats = load_reaction_stats()
+                            if stats is not None and not stats.empty:
+                                match = stats[(stats["event_type"] == event_key) & (stats["sector_etf"] == etf)]
+                                if not match.empty:
+                                    row = match.iloc[0]
+                                    hist_avg = row["avg_move_pct"]
+                                    
+                                    st.markdown("---")
+                                    st.markdown(f"**Historical Expectation for {etf} on {event_key} Day:**")
+                                    
+                                    hcol1, hcol2, hcol3 = st.columns(3)
+                                    hcol1.metric("Historical Avg Move", f"{hist_avg*100:+.2f}%")
+                                    hcol2.metric("Historical Win Rate", f"{row['win_rate']:.1%}")
+                                    hcol3.metric("Sample Size", f"{row['sample_size']} events")
+
+                                    # Basic Interpretation logic
+                                    st.markdown("#### 💡 Interpretation")
+                                    if move_pct > hist_avg + 0.005:
+                                        st.success("**Ahead of schedule.** The current move is already larger than the historical average for the full day. The drift may have already been realized. Consider waiting for a pullback.")
+                                    elif move_pct < 0 and hist_avg > 0:
+                                        st.warning("**Contrarian setup.** The ETF is trading down pre-market, but historically averages a positive move on this day. This is the highest-probability entry setup.")
+                                    else:
+                                        st.info("**Tracking in line.** The current move is roughly in line with historical expectations.")
+                                        
+                    except Exception as e:
+                        st.error(f"Error fetching live monitor data: {e}")
+
+
+
     # ==================== ECONOMIC CALENDAR ====================
     with st.expander("📅 Upcoming Economic Calendar"):
         from econ_calendar import get_upcoming_events
@@ -2005,6 +2285,86 @@ if st.session_state.single_ticker_results is not None:
                     "Period": st.column_config.TextColumn("Period", width="small"),
                 },
             )
+
+    # ==================== COMMODITY RIPPLE PREDICTOR (PHASE 5) ====================
+    with st.expander("🪙 Commodity Ripple Predictor", expanded=False):
+        st.markdown("### 🌊 Commodity-to-Sector Ripple Effects")
+        st.caption("Tracks macro commodities and their historical correlation to equity sectors.")
+        
+        comm_df = get_commodity_data_cached("1y")
+        
+        if comm_df.empty:
+            st.warning("Commodity data unavailable.")
+        else:
+            # Calculate returns
+            ret_1w = comm_df.pct_change(5).iloc[-1] if len(comm_df) > 5 else pd.Series(0, index=comm_df.columns)
+            ret_1m = comm_df.pct_change(21).iloc[-1] if len(comm_df) > 21 else pd.Series(0, index=comm_df.columns)
+            
+            # Display live metrics in columns
+            cols = st.columns(len(COMMODITY_SYMBOLS))
+            for i, (name, _) in enumerate(COMMODITY_SYMBOLS.items()):
+                if name in comm_df.columns:
+                    price = comm_df[name].iloc[-1]
+                    cols[i].metric(
+                        label=name,
+                        value=f"${price:.2f}",
+                        delta=f"{ret_1w[name]*100:+.1f}% (1W)"
+                    )
+            
+            st.markdown("---")
+            st.markdown("#### 🔗 Historical Correlation & Impact")
+            
+            sector_macro = get_macro_sector_data_cached("1y")
+            
+            # Calculate correlations and generate insights
+            for comm_name, sector_etf in COMMODITY_TO_SECTOR.items():
+                if comm_name not in comm_df.columns or f"{sector_etf}_close" not in sector_macro.columns:
+                    continue
+                    
+                # Align indices and calculate 60-day correlation
+                comm_series = comm_df[comm_name].pct_change()
+                sector_series = sector_macro[f"{sector_etf}_close"].pct_change()
+                
+                # Join and drop NaNs to align dates
+                combined = pd.concat([comm_series, sector_series], axis=1).dropna()
+                combined.columns = ['comm', 'sector']
+                
+                if len(combined) > 60:
+                    corr = combined['comm'].tail(60).corr(combined['sector'].tail(60))
+                    comm_1m_ret = ret_1m[comm_name] * 100
+                    
+                    # Determine impact text
+                    if corr > 0.3:
+                        if comm_1m_ret > 2:
+                            impact = f"🚀 **Bullish Tailwind:** {comm_name} is up {comm_1m_ret:+.1f}% this month. Historically, {comm_name} has a **{corr:.2f}** correlation with {sector_etf}. Expect upward pressure on {sector_etf}."
+                            box_type = "success"
+                        elif comm_1m_ret < -2:
+                            impact = f"⚠️ **Bearish Drag:** {comm_name} is down {comm_1m_ret:+.1f}% this month. With a **{corr:.2f}** historical correlation, this acts as a headwind for {sector_etf}."
+                            box_type = "warning"
+                        else:
+                            impact = f"⚖️ **Neutral:** {comm_name} is flat ({comm_1m_ret:+.1f}%). Correlation with {sector_etf} is **{corr:.2f}**."
+                            box_type = "info"
+                    elif corr < -0.3:
+                        if comm_1m_ret > 2:
+                            impact = f"📉 **Inverse Pressure:** {comm_name} is up {comm_1m_ret:+.1f}%. Because it is negatively correlated (**{corr:.2f}**) with {sector_etf}, this could act as a drag on the sector."
+                            box_type = "warning"
+                        elif comm_1m_ret < -2:
+                            impact = f"📈 **Inverse Tailwind:** {comm_name} is down {comm_1m_ret:+.1f}%. Due to negative correlation (**{corr:.2f}**), a drop in {comm_name} often means a tailwind for {sector_etf}."
+                            box_type = "success"
+                        else:
+                            impact = f"⚖️ **Neutral:** {comm_name} is flat ({comm_1m_ret:+.1f}%). Correlation with {sector_etf} is **{corr:.2f}**."
+                            box_type = "info"
+                    else:
+                        impact = f"➖ **Weak Relationship:** The 60-day correlation between {comm_name} and {sector_etf} is **{corr:.2f}**. Current move: {comm_1m_ret:+.1f}%."
+                        box_type = "info"
+                        
+                    # Display the insight
+                    if box_type == "success":
+                        st.success(impact)
+                    elif box_type == "warning":
+                        st.warning(impact)
+                    else:
+                        st.info(impact)
 
     # --- Feature importance (optional) ---
     if st.checkbox("Show what XGBoost learned"):

@@ -21,6 +21,8 @@ if not supabase_url or not supabase_key:
     exit(1)
 
 supabase = create_client(supabase_url, supabase_key)
+print(f"SUPABASE_URL = {os.getenv('SUPABASE_URL')}")
+print(f"SUPABASE_SERVICE_KEY (first 10 chars) = {os.getenv('SUPABASE_SERVICE_KEY')[:10]}...")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
